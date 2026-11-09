@@ -1,4 +1,11 @@
-import type { UIMessage } from 'ai'
+import type { LanguageModelUsage, UIMessage } from 'ai'
+
+export interface ChatMessageMetadata {
+  durationMs: number
+  usage: Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
+}
+
+export type ChatUIMessage = UIMessage<ChatMessageMetadata>
 
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
 export const MAX_CHAT_MESSAGES = 100

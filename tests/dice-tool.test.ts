@@ -1,6 +1,9 @@
 import { randomInt } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { rollDie } from '../server/agent/dice-tool'
+import { appendDiceRoll, createListSavedRollsTool, rollDie } from '../server/tools/dice'
 
 function fixedDraw(result: number, calls: Array<[number, number]>) {
   return ((min: number, max: number) => {
@@ -41,5 +44,27 @@ describe('rollDie', () => {
     rollDie(6, draw)
 
     expect(calls).toHaveLength(2)
+  })
+})
+
+describe('createListSavedRollsTool', () => {
+  it('returns the saved rolls from the configured CSV file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-chat-dice-tool-'))
+    const filePath = join(directory, 'dice-rolls.csv')
+
+    try {
+      await appendDiceRoll(4, new Date('2026-11-09T12:00:01.000Z'), filePath)
+      const listSavedRolls = createListSavedRollsTool({ filePath })
+
+      await expect(listSavedRolls.execute({}, {
+        toolCallId: 'call-1',
+        messages: [],
+        context: {},
+      })).resolves.toEqual([
+        { result: 4, date: '2026-11-09', time: '12:00:01.000Z' },
+      ])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })

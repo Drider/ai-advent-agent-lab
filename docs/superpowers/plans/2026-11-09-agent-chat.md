@@ -27,7 +27,7 @@
 | --- | --- |
 | `package.json`, `package-lock.json`, `tsconfig.json`, `nuxt.config.ts`, `.env.example`, `.gitignore` | Зависимости, команды, конфигурация и исключение секретов/логов |
 | `shared/chat.ts` | `ChatRequestBody`, `validateModelId`, `validateChatRequest`, константы ограничений |
-| `server/agent/dice-tool.ts` | Проверка числа граней, случайный бросок, AI SDK tool |
+| `server/tools/dice/dice-tool.ts` | Проверка числа граней, случайный бросок, AI SDK tool |
 | `server/agent/chat-agent.ts` | Создание `ToolLoopAgent`, поток, шаги, предел, связь с логгером |
 | `server/utils/run-logger.ts` | Уровни, проекция полей, атомарная запись JSON по `runId` |
 | `server/utils/chat-request.ts` | Лимит HTTP-тела, проверка UI-сообщений и разрешение приватной конфигурации |
@@ -63,7 +63,7 @@
 
 ### Task 2: Инструмент броска кубика
 
-**Files:** Create `server/agent/dice-tool.ts`, `tests/dice-tool.test.ts`.
+**Files:** Create `server/tools/dice/dice-tool.ts`, `tests/dice-tool.test.ts`.
 
 **Interfaces:** Produce `DieRoll { sides: number; result: number }`, `rollDie(sides?: number, draw?: typeof randomInt): DieRoll`, `createDiceTool(draw?: typeof randomInt)` для `ToolLoopAgent`.
 
