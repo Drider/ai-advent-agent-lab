@@ -6,6 +6,9 @@ export default defineNuxtConfig({
   srcDir: '.',
   modules: ['@nuxt/ui', '@comark/nuxt'],
   css: ['~/app/assets/css/main.css'],
+  ui: {
+    fonts: false,
+  },
   compatibilityDate: '2025-07-15',
   devtools: { enabled: false },
   runtimeConfig: {
