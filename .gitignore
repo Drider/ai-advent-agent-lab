@@ -1,0 +1,8 @@
+.env
+.nuxt
+.output
+node_modules
+data/runs
+data/dice-rolls.csv
+data/
+docks/
