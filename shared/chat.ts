@@ -22,10 +22,19 @@ function isUIMessageLike(value: unknown): value is UIMessage {
     return false
   }
 
+  const partsAreWellFormed = Array.isArray(value.parts)
+    && value.parts.every((part) => {
+      if (!isRecord(part) || typeof part.type !== 'string') {
+        return false
+      }
+
+      return part.type !== 'text' || typeof part.text === 'string'
+    })
+
   return typeof value.id === 'string'
     && value.id.length > 0
     && (value.role === 'user' || value.role === 'assistant' || value.role === 'system')
-    && Array.isArray(value.parts)
+    && partsAreWellFormed
 }
 
 function getMessageText(message: UIMessage): string {

@@ -1,3 +1,5 @@
+import { DEFAULT_CHAT_MODEL, validateModelId } from './shared/chat'
+
 const configuredDefaultModel = process.env.LLM_MODEL_DEFAULT?.trim()
 
 export default defineNuxtConfig({
@@ -11,7 +13,9 @@ export default defineNuxtConfig({
     llmBaseUrl: process.env.LLM_BASE_URL ?? '',
     llmLogLevel: process.env.LLM_LOG_LEVEL ?? 'basic',
     public: {
-      chatDefaultModel: configuredDefaultModel || 'deepseek/deepseek-v4.1-flash',
+      chatDefaultModel: configuredDefaultModel
+        ? validateModelId(configuredDefaultModel)
+        : DEFAULT_CHAT_MODEL,
     },
   },
   typescript: {
