@@ -1,4 +1,6 @@
 import { randomInt } from 'node:crypto'
+import { readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3StreamPart,
@@ -9,7 +11,7 @@ import {
   type UIMessage,
 } from 'ai'
 import { MockLanguageModelV3 } from 'ai/test'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { createChatAgent, streamChatAgent } from '../server/agent/chat-agent'
 import { createDiceTool } from '../server/agent/dice-tool'
 
@@ -82,6 +84,12 @@ function fixedDraw(result: number): typeof randomInt {
   return (() => result) as typeof randomInt
 }
 
+const loggedRunId = '2026-11-09T12:05:00.000Z'
+
+afterEach(async () => {
+  await rm(join(process.cwd(), 'data', 'runs', `run-${loggedRunId}.json`), { force: true })
+})
+
 describe('chat agent', () => {
   it('executes a dice tool and feeds its result into the next model step', async () => {
     const model = new MockLanguageModelV3({
@@ -143,6 +151,8 @@ describe('chat agent', () => {
       model,
       modelId: 'mock-model',
       messages: [userMessage('Брось d20')],
+      runId: '2026-11-09T12:00:00.000Z',
+      logLevel: 'off',
     }, createDiceTool(fixedDraw(17)))
     const body = await response.text()
 
@@ -174,11 +184,45 @@ describe('chat agent', () => {
       model,
       modelId: 'unsupported-model',
       messages: [userMessage('Брось кубик')],
+      runId: '2026-11-09T12:01:00.000Z',
+      logLevel: 'off',
     })
     const body = await response.text()
 
     expect(body).toContain('Не удалось получить ответ агента')
     expect(body).not.toContain('Выпало')
+  })
+
+  it('writes one detailed log entry after a streamed response', async () => {
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamToolCallResult('call-1'),
+        streamTextResult('Готово.'),
+      ],
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [userMessage('Проверь логирование')],
+      runId: loggedRunId,
+      logLevel: 'detailed',
+    }, createDiceTool(fixedDraw(4)))
+    await response.text()
+
+    const log = JSON.parse(await readFile(
+      join(process.cwd(), 'data', 'runs', `run-${loggedRunId}.json`),
+      'utf8',
+    )) as { requests: Array<Record<string, unknown>> }
+
+    expect(log.requests).toHaveLength(1)
+    expect(log.requests[0]).toMatchObject({
+      question: 'Проверь логирование',
+      answer: 'Готово.',
+      request: { model: 'mock-model' },
+      usage: { totalTokens: 30 },
+    })
+    expect(log.requests[0]?.steps).toHaveLength(2)
   })
 
   it('does not start a new step after the request is aborted', async () => {
