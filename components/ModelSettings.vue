@@ -20,16 +20,31 @@ const emit = defineEmits<{
     </div>
 
     <label class="model-settings__label" for="model-id">ID модели</label>
-    <UInput
-      id="model-id"
-      :model-value="modelValue"
-      size="lg"
-      icon="i-lucide-cpu"
-      autocomplete="off"
-      spellcheck="false"
-      placeholder="например, deepseek/deepseek-v4.1-flash"
-      @update:model-value="emit('update:modelValue', $event)"
-    />
+    <div class="model-settings__input-row">
+      <UInput
+        id="model-id"
+        :model-value="modelValue"
+        size="lg"
+        icon="i-lucide-cpu"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="например, deepseek/deepseek-v4.1-flash"
+        @update:model-value="emit('update:modelValue', $event)"
+      />
+      <UButton
+        class="model-settings__dashboard-button"
+        href="https://polza.ai/dashboard/models"
+        icon="i-lucide-external-link"
+        color="neutral"
+        variant="outline"
+        size="lg"
+        square
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Открыть дашборд моделей"
+        title="Открыть дашборд моделей"
+      />
+    </div>
     <p class="model-settings__hint">
       По умолчанию: <code>{{ defaultModel }}</code>
     </p>

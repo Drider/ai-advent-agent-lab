@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import {
-  DefaultChatTransport,
-  isTextUIPart,
-  type UIMessage,
-} from 'ai'
+import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
-import type { ChatRequestBody } from '~/shared/chat'
-import { computed, onMounted, shallowRef } from 'vue'
+import type { ChatRequestBody, ChatUIMessage } from '~/shared/chat'
+import { computed, onBeforeUnmount, onMounted, shallowRef } from 'vue'
 import { useChat } from '@ai-sdk/vue'
 
 const config = useRuntimeConfig()
@@ -15,6 +11,7 @@ const modelId = shallowRef(defaultModel)
 const draft = shallowRef('')
 const runId = shallowRef(createRunId())
 const settingsOpen = shallowRef(true)
+const uiReady = shallowRef(false)
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
@@ -23,7 +20,7 @@ function createRunId(): string {
   return new Date().toISOString()
 }
 
-const transport = new DefaultChatTransport<UIMessage>({
+const transport = new DefaultChatTransport<ChatUIMessage>({
   api: '/api/chat',
   prepareSendMessagesRequest: ({ messages }) => ({
     body: {
@@ -40,8 +37,9 @@ const {
   error,
   sendMessage,
   stop,
+  regenerate,
   clearError,
-} = useChat<UIMessage>({ transport })
+} = useChat<ChatUIMessage>({ transport })
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
 const statusLabel = computed(() => {
@@ -50,10 +48,6 @@ const statusLabel = computed(() => {
   if (status.value === 'error') return 'Ошибка'
   return 'Готово'
 })
-
-function hasToolPart(message: UIMessage): boolean {
-  return message.parts.some(part => part.type.startsWith('tool-'))
-}
 
 async function handleSubmit(event?: Event): Promise<void> {
   event?.preventDefault()
@@ -75,6 +69,22 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 
+function handleComposerClick(event: MouseEvent): void {
+  const target = event.target as HTMLElement
+
+  if (target.closest('button, a, input, select, textarea')) {
+    return
+  }
+
+  const textarea = (event.currentTarget as HTMLElement).querySelector('textarea')
+  textarea?.focus()
+}
+
+async function handleRetry(): Promise<void> {
+  clearError()
+  await regenerate()
+}
+
 function handleNewSession(): void {
   if (isBusy.value) {
     return
@@ -87,15 +97,29 @@ function handleNewSession(): void {
   clearError()
 }
 
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && settingsOpen.value && window.innerWidth <= 720) {
+    settingsOpen.value = false
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('keydown', handleGlobalKeydown)
+
   if (window.innerWidth <= 720) {
     settingsOpen.value = false
   }
+
+  uiReady.value = true
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
 </script>
 
 <template>
-  <main class="chat-layout">
+  <main class="chat-layout" :class="{ 'chat-layout--ready': uiReady }">
     <aside
       class="settings-sidebar"
       :class="{ 'settings-sidebar--open': settingsOpen }"
@@ -121,6 +145,14 @@ onMounted(() => {
       />
     </aside>
 
+    <button
+      v-if="settingsOpen"
+      class="settings-backdrop"
+      type="button"
+      aria-label="Закрыть настройки"
+      @click="settingsOpen = false"
+    />
+
     <section class="chat-workspace">
       <header class="chat-header">
         <div class="chat-header__copy">
@@ -128,17 +160,26 @@ onMounted(() => {
           <h1>Чат с LLM</h1>
         </div>
         <div class="chat-header__actions">
-          <UBadge color="neutral" variant="subtle">
+          <UBadge
+            class="chat-status-badge"
+            color="neutral"
+            variant="subtle"
+            role="status"
+            aria-live="polite"
+          >
             {{ statusLabel }}
           </UBadge>
           <UButton
+            class="chat-new-session"
             color="neutral"
             variant="soft"
             icon="i-lucide-square-pen"
-            label="Новая сессия"
+            aria-label="Новая сессия"
             :disabled="isBusy"
             @click="handleNewSession"
-          />
+          >
+            <span class="chat-new-session__label">Новая сессия</span>
+          </UButton>
         </div>
       </header>
 
@@ -172,15 +213,17 @@ onMounted(() => {
               <p v-else-if="isTextUIPart(part)" class="user-message-text">
                 {{ part.text }}
               </p>
+              <ChatToolCall
+                v-else-if="message.role === 'assistant' && isToolUIPart(part)"
+                :part="part"
+                :is-active="isBusy && message.id === messages.at(-1)?.id"
+              />
             </template>
 
-            <div
-              v-if="message.role === 'assistant' && hasToolPart(message)"
-              class="tool-status"
-            >
-              <UIcon name="i-lucide-dices" />
-              <span>Агент бросает кубик…</span>
-            </div>
+            <ChatRequestMetrics
+              v-if="message.role === 'assistant' && message.metadata"
+              :metadata="message.metadata"
+            />
           </div>
         </template>
       </UChatMessages>
@@ -190,17 +233,31 @@ onMounted(() => {
           <UIcon name="i-lucide-circle-alert" />
           <span>{{ error.message || 'Не удалось получить ответ модели.' }}</span>
         </div>
-        <UButton
-          size="sm"
-          color="error"
-          variant="soft"
-          @click="clearError"
-        >
-          Закрыть
-        </UButton>
+        <div class="chat-error__actions">
+          <UButton
+            size="sm"
+            color="error"
+            variant="soft"
+            @click="handleRetry"
+          >
+            Повторить
+          </UButton>
+          <UButton
+            size="sm"
+            color="neutral"
+            variant="ghost"
+            @click="clearError"
+          >
+            Закрыть
+          </UButton>
+        </div>
       </div>
 
-      <form class="chat-composer" @submit="handleSubmit">
+      <form
+        class="chat-composer"
+        @click="handleComposerClick"
+        @submit="handleSubmit"
+      >
         <UTextarea
           v-model="draft"
           :disabled="isBusy"
@@ -213,7 +270,7 @@ onMounted(() => {
           @keydown="handleKeydown"
         />
         <div class="chat-composer__footer">
-          <span>Enter — отправить · Shift+Enter — новая строка</span>
+          <span class="chat-composer__hint">Enter — отправить · Shift+Enter — новая строка</span>
           <UButton
             v-if="isBusy"
             type="button"
@@ -225,11 +282,14 @@ onMounted(() => {
           <UButton
             v-else
             type="submit"
+            class="chat-composer__submit"
             color="neutral"
-            icon="i-lucide-arrow-up"
+            variant="solid"
             aria-label="Отправить сообщение"
             :disabled="!draft.trim()"
-          />
+          >
+            <UIcon name="i-lucide-arrow-up" class="chat-composer__submit-icon" aria-hidden="true" />
+          </UButton>
         </div>
       </form>
     </section>
