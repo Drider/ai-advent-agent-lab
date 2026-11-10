@@ -62,7 +62,7 @@ function stopAtStepLimit() {
 export function createChatAgent(
   model: LanguageModel,
   diceTool = createDiceTool(),
-  options: { includeRawChunks?: boolean } = {},
+  options: { includeRawChunks?: boolean; disableMutatingTools?: boolean } = {},
   savedRollsTool = createListSavedRollsTool(),
   fileTools: FileTools = createFileTools(),
   sessionTools: SessionTools = createSessionTools(),
@@ -78,6 +78,19 @@ export function createChatAgent(
     },
     stopWhen: stopAtStepLimit(),
     timeout: { totalMs: AGENT_TIMEOUT_MS },
+    ...(options.disableMutatingTools ? {
+      activeTools: [
+        'listSavedRolls',
+        'find_files',
+        'read_file',
+        'search_text',
+        'text_stats',
+        'get_current_session',
+        'list_sessions',
+        'read_session_file',
+        'analyze_sessions',
+      ] as never,
+    } : {}),
     include: {
       requestMessages: true,
       rawChunks: options.includeRawChunks === true,
@@ -145,6 +158,7 @@ export async function streamChatAgent(input: {
   sessionId?: string
   turnId?: string
   turnRepository?: ReturnType<typeof createTurnRepository>
+  disableMutatingTools?: boolean
 }, diceTool = createDiceTool(), savedRollsTool = createListSavedRollsTool(), fileTools: FileTools = createFileTools(), sessionTools?: SessionTools): Promise<Response> {
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
@@ -286,7 +300,10 @@ export async function streamChatAgent(input: {
     agent: createChatAgent(
       input.model,
       persistedDiceTool,
-      { includeRawChunks: input.logLevel === 'raw' },
+      {
+        includeRawChunks: input.logLevel === 'raw',
+        disableMutatingTools: input.disableMutatingTools,
+      },
       persistedSavedRollsTool,
       persistedFileTools,
       sessionTools ?? createSessionTools({
@@ -312,7 +329,7 @@ export async function streamChatAgent(input: {
     },
     onUIMessageStepEnd: async (event) => {
       if (persisted) {
-        await persistAssistantSnapshot(event.responseMessage as ChatUIMessage, 'partial')
+        await persistAssistantSnapshot(event.responseMessage as ChatUIMessage, 'complete')
       }
     },
     messageMetadata: ({ part }) => {

@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createError, defineEventHandler, readRawBody } from 'h3'
 import type { ChatRuntimeConfig } from '../utils/chat-request'
@@ -64,6 +64,13 @@ export default defineEventHandler(async (event) => {
         agentConfig: getAgentConfig(),
       }).turnId
     } else {
+      const continuation = turns.assessContinuation(request.sourceTurnId)
+      if (continuation === 'not_available') {
+        throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${request.sourceTurnId} is not available for continuation`)
+      }
+      if (continuation === 'needs_review') {
+        throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${request.sourceTurnId} has an unconfirmed tool result`)
+      }
       turnId = turns.beginContinuation({
         sessionId: request.sessionId,
         requestId: request.requestId,
@@ -78,6 +85,12 @@ export default defineEventHandler(async (event) => {
     }
     if (error instanceof TurnRepositoryError && error.code === 'TURN_NOT_FOUND') {
       throw createError({ statusCode: 404, statusMessage: error.message })
+    }
+    if (error instanceof TurnRepositoryError && error.code === 'CONTINUATION_NOT_AVAILABLE') {
+      throw createError({ statusCode: 409, statusMessage: error.message })
+    }
+    if (error instanceof TurnRepositoryError && error.code === 'CONTINUATION_NEEDS_REVIEW') {
+      throw createError({ statusCode: 409, statusMessage: error.message })
     }
     throw error
   }
@@ -97,6 +110,16 @@ export default defineEventHandler(async (event) => {
   }
 
   const diceRepository = createDiceRollRepository(db)
+  if (request.kind === 'continue') {
+    messages = [
+      ...messages,
+      {
+        id: randomUUID(),
+        role: 'system' as const,
+        parts: [{ type: 'text', text: 'Continue from the last confirmed tool results. Do not repeat mutating actions.' }],
+      } as ChatUIMessage,
+    ]
+  }
   const runId = session.runLogId
   const abortSignal = event.web?.request?.signal
 
@@ -111,6 +134,7 @@ export default defineEventHandler(async (event) => {
       sessionId: request.sessionId,
       turnId,
       turnRepository: turns,
+      disableMutatingTools: request.kind === 'continue',
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),

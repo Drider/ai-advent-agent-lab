@@ -253,7 +253,15 @@ export function createSessionRepository(db: Database.Database) {
       && messageRows.at(-1)?.status === 'interrupted'
       && messages.at(-1)?.role === 'assistant'
     ) {
-      messages.pop()
+      const preservedToolParts = messages.at(-1)!.parts.filter(part => part.type !== 'text')
+      if (preservedToolParts.length === 0) {
+        messages.pop()
+      } else {
+        messages[messages.length - 1] = {
+          ...messages.at(-1)!,
+          parts: preservedToolParts,
+        }
+      }
     }
 
     const turn = db.prepare(`

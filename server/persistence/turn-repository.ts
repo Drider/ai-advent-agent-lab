@@ -11,7 +11,13 @@ import {
 
 export class TurnRepositoryError extends Error {
   constructor(
-    public readonly code: 'TURN_ALREADY_EXISTS' | 'SESSION_NOT_FOUND' | 'TURN_NOT_FOUND' | 'TOOL_NOT_FOUND',
+    public readonly code:
+      | 'TURN_ALREADY_EXISTS'
+      | 'SESSION_NOT_FOUND'
+      | 'TURN_NOT_FOUND'
+      | 'TOOL_NOT_FOUND'
+      | 'CONTINUATION_NOT_AVAILABLE'
+      | 'CONTINUATION_NEEDS_REVIEW',
     message: string,
   ) {
     super(message)
@@ -181,6 +187,13 @@ export function createTurnRepository(db: Database.Database) {
       if (!source || source.session_id !== input.sessionId) {
         throw new TurnRepositoryError('TURN_NOT_FOUND', `source turn ${input.sourceTurnId} was not found`)
       }
+      const continuation = assessContinuation(input.sourceTurnId)
+      if (continuation === 'not_available') {
+        throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${input.sourceTurnId} is not available for continuation`)
+      }
+      if (continuation === 'needs_review') {
+        throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${input.sourceTurnId} has an unconfirmed tool result`)
+      }
       insertTurn(input)
       touchSession(input.sessionId, 'running', now())
       return { turnId: input.requestId }
@@ -193,6 +206,24 @@ export function createTurnRepository(db: Database.Database) {
       throw new TurnRepositoryError('TURN_NOT_FOUND', `turn ${turnId} was not found`)
     }
     return row
+  }
+
+  function assessContinuation(sourceTurnId: string): 'safe' | 'needs_review' | 'not_available' {
+    const turn = db.prepare('SELECT status FROM turns WHERE id = ?').get(sourceTurnId) as { status: ChatTurnStatus } | undefined
+    if (!turn || !['interrupted', 'failed', 'stopped', 'needs_review'].includes(turn.status)) {
+      return 'not_available'
+    }
+    if (turn.status === 'needs_review') {
+      return 'needs_review'
+    }
+    const uncertain = db.prepare(`
+      SELECT 1
+      FROM tool_executions
+      WHERE turn_id = ?
+        AND (status = 'running' OR (status = 'failed' AND tool_name IN ('rollDie', 'write_file')))
+      LIMIT 1
+    `).get(sourceTurnId)
+    return uncertain ? 'needs_review' : 'safe'
   }
 
   function saveAssistantSnapshotInTransaction(input: {
@@ -379,6 +410,7 @@ export function createTurnRepository(db: Database.Database) {
   return {
     beginUserTurn,
     beginContinuation,
+    assessContinuation,
     saveAssistantSnapshot,
     recordToolStart,
     recordToolEnd,
