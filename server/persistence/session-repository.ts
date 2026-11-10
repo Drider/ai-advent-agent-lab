@@ -229,7 +229,10 @@ export function createSessionRepository(db: Database.Database) {
     }
   }
 
-  async function getSession(id: string): Promise<SessionDetail | null> {
+  async function getSession(
+    id: string,
+    options: { excludeTrailingInterruptedAssistant?: boolean } = {},
+  ): Promise<SessionDetail | null> {
     const row = findSession.get(id) as SessionRow | undefined
     if (!row) {
       return null
@@ -244,6 +247,13 @@ export function createSessionRepository(db: Database.Database) {
     const messages: ChatUIMessage[] = []
     for (const messageRow of messageRows) {
       messages.push(await decodeMessage(messageRow))
+    }
+    if (
+      options.excludeTrailingInterruptedAssistant === true
+      && messageRows.at(-1)?.status === 'interrupted'
+      && messages.at(-1)?.role === 'assistant'
+    ) {
+      messages.pop()
     }
 
     const turn = db.prepare(`

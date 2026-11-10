@@ -21,16 +21,12 @@ export async function buildSessionContext(
   sessionId: string,
   repository: SessionRepository,
 ): Promise<UIMessage[]> {
-  const session = await repository.getSession(sessionId)
+  const session = await repository.getSession(sessionId, { excludeTrailingInterruptedAssistant: true })
   if (!session) {
     throw new SessionContextError('SESSION_NOT_FOUND', `session ${sessionId} was not found`)
   }
 
   let messages = session.messages
-  if (session.lastTurn?.status === 'interrupted' && messages.at(-1)?.role === 'assistant') {
-    messages = messages.slice(0, -1)
-  }
-
   if (messages.length > MAX_CHAT_MESSAGES) {
     throw new SessionContextError(
       'CONTEXT_LIMIT_REACHED',

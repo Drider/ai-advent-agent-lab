@@ -1,11 +1,16 @@
+import { randomInt } from 'node:crypto'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createError, defineEventHandler, readRawBody } from 'h3'
 import type { ChatRuntimeConfig } from '../utils/chat-request'
 import { parseChatPayload, resolveChatConfig } from '../utils/chat-request'
-import { streamChatAgent } from '../agent/chat-agent'
+import { getAgentConfig, streamChatAgent } from '../agent/chat-agent'
+import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { getChatDatabase } from '../persistence/db'
+import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
-import { buildSessionContext } from '../utils/session-context'
+import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-repository'
+import { buildSessionContext, SessionContextError } from '../utils/session-context'
+import type { ChatUIMessage } from '../../shared/chat'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -37,17 +42,61 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  const db = getChatDatabase()
   const provider = createOpenAI({
     baseURL: chatConfig.baseURL,
     apiKey: chatConfig.apiKey,
   })
+  const turns = createTurnRepository(db)
   const sessions = createSessionRepository(getChatDatabase())
   const session = await sessions.getSession(request.sessionId)
   if (!session) {
     throw createError({ statusCode: 404, statusMessage: 'Session not found' })
   }
-  const history = await buildSessionContext(request.sessionId, sessions)
-  const messages = request.kind === 'message' ? [...history, request.message] : history
+  let turnId: string
+  try {
+    if (request.kind === 'message') {
+      turnId = turns.beginUserTurn({
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        modelId: chatConfig.modelId,
+        message: request.message as ChatUIMessage,
+        agentConfig: getAgentConfig(),
+      }).turnId
+    } else {
+      turnId = turns.beginContinuation({
+        sessionId: request.sessionId,
+        requestId: request.requestId,
+        sourceTurnId: request.sourceTurnId,
+        modelId: chatConfig.modelId,
+        agentConfig: getAgentConfig(),
+      }).turnId
+    }
+  } catch (error) {
+    if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
+      throw createError({ statusCode: 409, statusMessage: error.message })
+    }
+    if (error instanceof TurnRepositoryError && error.code === 'TURN_NOT_FOUND') {
+      throw createError({ statusCode: 404, statusMessage: error.message })
+    }
+    throw error
+  }
+
+  let messages
+  try {
+    messages = await buildSessionContext(request.sessionId, sessions)
+  } catch (error) {
+    turns.markFailed(turnId)
+    if (error instanceof SessionContextError && error.code === 'CONTEXT_LIMIT_REACHED') {
+      throw createError({ statusCode: 413, statusMessage: error.message })
+    }
+    if (error instanceof SessionContextError && error.code === 'SESSION_NOT_FOUND') {
+      throw createError({ statusCode: 404, statusMessage: error.message })
+    }
+    throw error
+  }
+
+  const diceRepository = createDiceRollRepository(db)
   const runId = session.runLogId
   const abortSignal = event.web?.request?.signal
 
@@ -59,7 +108,13 @@ export default defineEventHandler(async (event) => {
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,
-    })
+      sessionId: request.sessionId,
+      turnId,
+      turnRepository: turns,
+    },
+    createDiceTool(randomInt, { repository: diceRepository }),
+    createListSavedRollsTool({ repository: diceRepository }),
+    )
   } catch (error) {
     console.error('[chat] provider stream failed')
     throw createError({

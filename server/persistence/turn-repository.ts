@@ -344,6 +344,19 @@ export function createTurnRepository(db: Database.Database) {
     })
   }
 
+  function markFailed(turnId: string): void {
+    transaction(() => {
+      const turn = getTurnRow(turnId)
+      if (turn.status !== 'running') {
+        return
+      }
+      const timestamp = now()
+      db.prepare("UPDATE turns SET status = 'failed', finished_at = ?, updated_at = ? WHERE id = ?")
+        .run(timestamp, timestamp, turnId)
+      touchSession(turn.session_id, 'failed', timestamp)
+    })
+  }
+
   function recoverRunningTurns(): number {
     return transaction(() => {
       const rows = db.prepare("SELECT id, session_id FROM turns WHERE status = 'running'").all() as Array<{ id: string; session_id: string }>
@@ -372,6 +385,7 @@ export function createTurnRepository(db: Database.Database) {
     finishTurn,
     getLastTurn,
     markStopped,
+    markFailed,
     recoverRunningTurns,
   }
 }
