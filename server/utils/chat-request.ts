@@ -36,14 +36,18 @@ export async function parseChatPayload(raw: string): Promise<ChatRequestBody> {
 
   const request = validateChatRequest(parsed)
 
+  if (request.kind === 'continue') {
+    return request
+  }
+
   try {
     const messages = await validateUIMessages<UIMessage>({
-      messages: request.messages,
+      messages: [request.message],
     })
 
     return {
       ...request,
-      messages,
+      message: messages[0]!,
     }
   } catch {
     throw new Error('messages must contain valid UIMessage entries')
