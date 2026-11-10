@@ -87,13 +87,10 @@ const statusLabel = computed(() => {
       return 'Генерация'
     case needsReview.value:
       return 'Нужна проверка'
+    case canContinue.value && lastTurnStatus.value === 'stopped':
+      return 'Остановлен'
     case canContinue.value:
-      switch (lastTurnStatus.value) {
-        case 'stopped':
-          return 'Остановлен'
-        default:
-          return 'Прерван'
-      }
+      return 'Прерван'
     case status.value === 'error':
       return 'Ошибка'
     default:
