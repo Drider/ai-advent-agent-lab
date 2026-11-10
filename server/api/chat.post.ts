@@ -3,6 +3,9 @@ import { createError, defineEventHandler, readRawBody } from 'h3'
 import type { ChatRuntimeConfig } from '../utils/chat-request'
 import { parseChatPayload, resolveChatConfig } from '../utils/chat-request'
 import { streamChatAgent } from '../agent/chat-agent'
+import { getChatDatabase } from '../persistence/db'
+import { createSessionRepository } from '../persistence/session-repository'
+import { buildSessionContext } from '../utils/session-context'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -38,14 +41,21 @@ export default defineEventHandler(async (event) => {
     baseURL: chatConfig.baseURL,
     apiKey: chatConfig.apiKey,
   })
-  const runId = request.runId ?? new Date().toISOString()
+  const sessions = createSessionRepository(getChatDatabase())
+  const session = await sessions.getSession(request.sessionId)
+  if (!session) {
+    throw createError({ statusCode: 404, statusMessage: 'Session not found' })
+  }
+  const history = await buildSessionContext(request.sessionId, sessions)
+  const messages = request.kind === 'message' ? [...history, request.message] : history
+  const runId = session.runLogId
   const abortSignal = event.web?.request?.signal
 
   try {
     return await streamChatAgent({
       model: provider.chat(chatConfig.modelId),
       modelId: chatConfig.modelId,
-      messages: request.messages,
+      messages,
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,

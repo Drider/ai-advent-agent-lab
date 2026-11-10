@@ -6,12 +6,12 @@ import {
   validateModelId,
 } from '../shared/chat'
 
+const sessionId = '11111111-1111-4111-8111-111111111111'
+const requestId = '22222222-2222-4222-8222-222222222222'
+const sourceTurnId = '33333333-3333-4333-8333-333333333333'
+
 function userMessage(text: string): UIMessage {
-  return {
-    id: 'message-1',
-    role: 'user',
-    parts: [{ type: 'text', text }],
-  }
+  return { id: 'message-1', role: 'user', parts: [{ type: 'text', text }] }
 }
 
 describe('validateModelId', () => {
@@ -31,47 +31,68 @@ describe('validateModelId', () => {
 })
 
 describe('validateChatRequest', () => {
-  it('accepts a valid user message and ISO run ID', () => {
-    const messages = [userMessage('Брось кубик')]
-
+  it('accepts one new user message with UUID request identifiers', () => {
     expect(validateChatRequest({
-      messages,
+      kind: 'message',
+      sessionId,
+      requestId,
+      message: userMessage('Брось кубик'),
       model: ' deepseek/deepseek-v4.1-flash ',
-      runId: '2026-11-09T12:00:00.000Z',
     })).toEqual({
-      messages,
+      kind: 'message',
+      sessionId,
+      requestId,
+      message: userMessage('Брось кубик'),
       model: 'deepseek/deepseek-v4.1-flash',
-      runId: '2026-11-09T12:00:00.000Z',
     })
   })
 
-  it('rejects an empty last user message', () => {
-    expect(() => validateChatRequest({ messages: [userMessage('')] })).toThrow(
-      'the last user message must contain text',
-    )
+  it('accepts a continuation without allowing a replacement history', () => {
+    expect(validateChatRequest({ kind: 'continue', sessionId, requestId, sourceTurnId })).toEqual({
+      kind: 'continue',
+      sessionId,
+      requestId,
+      sourceTurnId,
+    })
   })
 
-  it('rejects more than 100 messages', () => {
-    const messages = Array.from({ length: 101 }, (_, index) => ({
-      ...userMessage(`message ${index}`),
-      id: `message-${index}`,
-    }))
-
-    expect(() => validateChatRequest({ messages })).toThrow(
-      'messages must contain no more than 100 entries',
-    )
+  it('rejects a client-supplied messages array', () => {
+    expect(() => validateChatRequest({ messages: [userMessage('forged history')] })).toThrow()
   })
 
-  it('rejects a last user message longer than 10000 characters', () => {
-    expect(() => validateChatRequest({ messages: [userMessage('x'.repeat(10001))] })).toThrow(
-      'the last user message must be no longer than 10000 characters',
-    )
-  })
-
-  it('rejects a non-ISO run ID', () => {
+  it('rejects assistant messages, malformed UUIDs, and empty text', () => {
     expect(() => validateChatRequest({
-      messages: [userMessage('Hello')],
-      runId: 'not-an-iso-date',
-    })).toThrow('runId must be an ISO timestamp')
+      kind: 'message',
+      sessionId,
+      requestId,
+      message: { ...userMessage('answer'), role: 'assistant' },
+    })).toThrow('message must be a user UIMessage')
+    expect(() => validateChatRequest({
+      kind: 'message',
+      sessionId: 'not-a-uuid',
+      requestId,
+      message: userMessage('Hello'),
+    })).toThrow('sessionId must be a UUID')
+    expect(() => validateChatRequest({
+      kind: 'message',
+      sessionId,
+      requestId,
+      message: userMessage(''),
+    })).toThrow('the message must contain text')
+  })
+
+  it('rejects an oversized message and invalid continuation source', () => {
+    expect(() => validateChatRequest({
+      kind: 'message',
+      sessionId,
+      requestId,
+      message: userMessage('x'.repeat(10_001)),
+    })).toThrow('the message must be no longer than 10000 characters')
+    expect(() => validateChatRequest({
+      kind: 'continue',
+      sessionId,
+      requestId,
+      sourceTurnId: 'not-a-uuid',
+    })).toThrow('sourceTurnId must be a UUID')
   })
 })

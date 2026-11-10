@@ -46,14 +46,25 @@ export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
 export const MAX_CHAT_MESSAGES = 100
 export const MAX_LAST_USER_MESSAGE_LENGTH = 10_000
 export const MAX_MODEL_ID_LENGTH = 200
+export const MAX_CHAT_CONTEXT_BYTES = 256 * 1024
 
-const ISO_RUN_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
-export interface ChatRequestBody {
-  messages: UIMessage[]
-  model?: string
-  runId?: string
-}
+export type ChatRequestBody =
+  | {
+      kind: 'message'
+      sessionId: string
+      requestId: string
+      model?: string
+      message: UIMessage
+    }
+  | {
+      kind: 'continue'
+      sessionId: string
+      requestId: string
+      sourceTurnId: string
+      model?: string
+    }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -108,45 +119,59 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
     throw new Error('Request body must be an object')
   }
 
-  if (!Array.isArray(input.messages)) {
-    throw new Error('messages must be an array')
+  if (input.kind !== 'message' && input.kind !== 'continue') {
+    throw new Error('kind must be either message or continue')
   }
 
-  if (input.messages.length > MAX_CHAT_MESSAGES) {
-    throw new Error('messages must contain no more than 100 entries')
+  if (typeof input.sessionId !== 'string' || !UUID_PATTERN.test(input.sessionId)) {
+    throw new Error('sessionId must be a UUID')
   }
 
-  if (!input.messages.every(isUIMessageLike)) {
-    throw new Error('messages must contain valid UIMessage entries')
+  if (typeof input.requestId !== 'string' || !UUID_PATTERN.test(input.requestId)) {
+    throw new Error('requestId must be a UUID')
   }
 
-  const messages = input.messages
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find(message => message.role === 'user')
-
-  if (lastUserMessage) {
-    const text = getMessageText(lastUserMessage)
-    if (!text.trim()) {
-      throw new Error('the last user message must contain text')
-    }
-
-    if (text.length > MAX_LAST_USER_MESSAGE_LENGTH) {
-      throw new Error('the last user message must be no longer than 10000 characters')
-    }
+  if ('messages' in input || 'runId' in input) {
+    throw new Error('client-supplied history is not accepted')
   }
 
   const model = input.model === undefined ? undefined : validateModelId(input.model)
 
-  if (input.runId !== undefined) {
-    if (typeof input.runId !== 'string' || !ISO_RUN_ID_PATTERN.test(input.runId)) {
-      throw new Error('runId must be an ISO timestamp')
+  if (input.kind === 'continue') {
+    if (typeof input.sourceTurnId !== 'string' || !UUID_PATTERN.test(input.sourceTurnId)) {
+      throw new Error('sourceTurnId must be a UUID')
+    }
+
+    return {
+      kind: 'continue',
+      sessionId: input.sessionId,
+      requestId: input.requestId,
+      sourceTurnId: input.sourceTurnId,
+      ...(model === undefined ? {} : { model }),
     }
   }
 
+  if (!isUIMessageLike(input.message)) {
+    throw new Error('messages must contain valid UIMessage entries')
+  }
+  if (input.message.role !== 'user') {
+    throw new Error('message must be a user UIMessage')
+  }
+
+  const text = getMessageText(input.message)
+  if (!text.trim()) {
+    throw new Error('the message must contain text')
+  }
+
+  if (text.length > MAX_LAST_USER_MESSAGE_LENGTH) {
+    throw new Error('the message must be no longer than 10000 characters')
+  }
+
   return {
-    messages,
+    kind: 'message',
+    sessionId: input.sessionId,
+    requestId: input.requestId,
+    message: input.message,
     ...(model === undefined ? {} : { model }),
-    ...(input.runId === undefined ? {} : { runId: input.runId }),
   }
 }

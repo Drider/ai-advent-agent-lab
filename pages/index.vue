@@ -9,26 +9,30 @@ const config = useRuntimeConfig()
 const defaultModel = config.public.chatDefaultModel
 const modelId = shallowRef(defaultModel)
 const draft = shallowRef('')
-const runId = shallowRef(createRunId())
+const sessionId = shallowRef('11111111-1111-4111-8111-111111111111')
 const settingsOpen = shallowRef(true)
 const uiReady = shallowRef(false)
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
 
-function createRunId(): string {
-  return new Date().toISOString()
-}
-
 const transport = new DefaultChatTransport<ChatUIMessage>({
   api: '/api/chat',
-  prepareSendMessagesRequest: ({ messages }) => ({
-    body: {
-      messages,
-      model: modelId.value,
-      runId: runId.value,
-    } satisfies ChatRequestBody,
-  }),
+  prepareSendMessagesRequest: ({ messages }) => {
+    const message = messages.at(-1)
+    if (!message) {
+      throw new Error('Cannot send an empty chat')
+    }
+    return {
+      body: {
+        kind: 'message',
+        sessionId: sessionId.value,
+        requestId: crypto.randomUUID(),
+        message,
+        model: modelId.value,
+      } satisfies ChatRequestBody,
+    }
+  },
 })
 
 const {
@@ -93,7 +97,6 @@ function handleNewSession(): void {
   messages.value = []
   draft.value = ''
   modelId.value = defaultModel
-  runId.value = createRunId()
   clearError()
 }
 
