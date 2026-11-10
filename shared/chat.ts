@@ -7,6 +7,41 @@ export interface ChatMessageMetadata {
 
 export type ChatUIMessage = UIMessage<ChatMessageMetadata>
 
+export const CHAT_MESSAGE_STORAGE_VERSION = 1
+
+export type ChatSessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'needs_review'
+export type ChatTurnStatus = Exclude<ChatSessionStatus, 'idle'>
+export type ChatMessageStatus = 'complete' | 'partial' | 'interrupted'
+
+export interface SessionSummary {
+  id: string
+  runLogId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt?: string
+  status: ChatSessionStatus
+  revision: number
+}
+
+export interface SessionTurnSummary {
+  id: string
+  sessionId: string
+  requestId: string
+  sourceTurnId?: string
+  position: number
+  status: ChatTurnStatus
+  modelId: string
+  startedAt: string
+  finishedAt?: string
+  updatedAt: string
+}
+
+export interface SessionDetail extends SessionSummary {
+  messages: ChatUIMessage[]
+  lastTurn: SessionTurnSummary | null
+}
+
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
 export const MAX_CHAT_MESSAGES = 100
 export const MAX_LAST_USER_MESSAGE_LENGTH = 10_000
