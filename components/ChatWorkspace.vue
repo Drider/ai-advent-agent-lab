@@ -80,12 +80,25 @@ const isBusy = computed(() => status.value === 'submitted' || status.value === '
 const canContinue = computed(() => !isBusy.value && ['interrupted', 'stopped', 'failed'].includes(lastTurnStatus.value))
 const needsReview = computed(() => lastTurnStatus.value === 'needs_review' || props.session.status === 'needs_review')
 const statusLabel = computed(() => {
-  if (status.value === 'submitted') return 'Подключение'
-  if (status.value === 'streaming') return 'Генерация'
-  if (needsReview.value) return 'Нужна проверка'
-  if (canContinue.value) return lastTurnStatus.value === 'stopped' ? 'Остановлен' : 'Прерван'
-  if (status.value === 'error') return 'Ошибка'
-  return 'Готово'
+  switch (true) {
+    case status.value === 'submitted':
+      return 'Подключение'
+    case status.value === 'streaming':
+      return 'Генерация'
+    case needsReview.value:
+      return 'Нужна проверка'
+    case canContinue.value:
+      switch (lastTurnStatus.value) {
+        case 'stopped':
+          return 'Остановлен'
+        default:
+          return 'Прерван'
+      }
+    case status.value === 'error':
+      return 'Ошибка'
+    default:
+      return 'Готово'
+  }
 })
 
 watch(isBusy, busy => emit('busyChange', busy), { immediate: true })

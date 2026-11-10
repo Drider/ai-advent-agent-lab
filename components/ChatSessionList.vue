@@ -16,12 +16,20 @@ const emit = defineEmits<{
 }>()
 
 function statusLabel(status: SessionSummary['status']): string {
-  if (status === 'running') return 'В работе'
-  if (status === 'interrupted') return 'Прерван'
-  if (status === 'stopped') return 'Остановлен'
-  if (status === 'failed') return 'Ошибка'
-  if (status === 'needs_review') return 'Нужна проверка'
-  return ''
+  switch (status) {
+    case 'running':
+      return 'В работе'
+    case 'interrupted':
+      return 'Прерван'
+    case 'stopped':
+      return 'Остановлен'
+    case 'failed':
+      return 'Ошибка'
+    case 'needs_review':
+      return 'Нужна проверка'
+    default:
+      return ''
+  }
 }
 
 function formatDate(value: string): string {
