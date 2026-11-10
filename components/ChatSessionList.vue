@@ -4,6 +4,8 @@ import type { SessionSummary } from '~/shared/chat'
 const props = defineProps<{
   items: SessionSummary[]
   selectedId: string
+  modelValue: string
+  defaultModel: string
   loading?: boolean
   disabled?: boolean
   hasMore?: boolean
@@ -13,6 +15,7 @@ const emit = defineEmits<{
   select: [sessionId: string]
   newSession: []
   loadMore: []
+  'update:modelValue': [value: string]
 }>()
 
 function statusLabel(status: SessionSummary['status']): string {
@@ -39,6 +42,12 @@ function formatDate(value: string): string {
 
 <template>
   <aside class="session-sidebar" aria-label="Сессии чата">
+    <ModelSettings
+      :model-value="props.modelValue"
+      :default-model="props.defaultModel"
+      @update:model-value="emit('update:modelValue', $event)"
+    />
+
     <div class="session-sidebar__header">
       <div>
         <p class="session-sidebar__eyebrow">История</p>

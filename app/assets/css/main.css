@@ -74,8 +74,8 @@ body {
 
 .session-sidebar {
   display: flex;
-  width: 18rem;
-  flex: 0 0 18rem;
+  width: 20rem;
+  flex: 0 0 20rem;
   min-height: 100dvh;
   flex-direction: column;
   gap: 0.9rem;
@@ -83,6 +83,12 @@ body {
   border-right: 1px solid #e2e8f0;
   padding: 1rem 0.75rem;
   background: #f8fafc;
+}
+
+.session-sidebar > .model-settings {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 0.5rem 0.25rem 1rem;
 }
 
 .session-sidebar__header {
@@ -220,53 +226,6 @@ button,
 input,
 textarea {
   font: inherit;
-}
-
-.chat-layout {
-  display: flex;
-  height: 100dvh;
-  min-height: 100dvh;
-  overflow: hidden;
-  background: #fff;
-}
-
-.settings-sidebar {
-  width: 3.75rem;
-  flex: 0 0 3.75rem;
-  min-height: 100dvh;
-  overflow-y: auto;
-  border-right: 1px solid #e2e8f0;
-  background: #f8fafc;
-  transition: width 180ms ease, flex-basis 180ms ease;
-}
-
-.settings-sidebar__top > button {
-  min-width: 2.75rem;
-  min-height: 2.75rem;
-}
-
-.settings-backdrop {
-  display: none;
-}
-
-.settings-sidebar--open {
-  width: 19rem;
-  flex-basis: 19rem;
-}
-
-.settings-sidebar__top {
-  display: flex;
-  min-height: 4.5rem;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.8rem 0.75rem;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.settings-sidebar__title {
-  color: #172033;
-  font-size: 1rem;
-  font-weight: 700;
 }
 
 .model-settings {
@@ -577,6 +536,7 @@ textarea {
 @media (max-width: 720px) {
   .chat-app-shell {
     display: block;
+    overflow: visible;
   }
 
   .session-sidebar {
@@ -596,40 +556,10 @@ textarea {
     flex-direction: column;
   }
 
-  .chat-layout:not(.chat-layout--ready) .settings-sidebar--open,
-  .chat-layout:not(.chat-layout--ready) .settings-backdrop {
-    visibility: hidden;
-  }
-
-  .settings-sidebar {
-    position: fixed;
-    z-index: 20;
-    inset: 0 auto 0 0;
-    min-height: 100dvh;
-    box-shadow: 0.8rem 0 2rem rgb(15 23 42 / 10%);
-  }
-
-  .settings-backdrop {
-    position: fixed;
-    z-index: 19;
-    inset: 0;
-    display: block;
-    width: 100%;
-    min-height: 100%;
-    border: 0;
-    padding: 0;
-    background: rgb(15 23 42 / 32%);
-    cursor: pointer;
-  }
-
-  .settings-sidebar--open {
-    width: min(19rem, calc(100vw - 3.25rem));
-  }
-
   .chat-workspace {
     width: 100%;
     padding-right: 0.75rem;
-    padding-left: 4.5rem;
+    padding-left: 0.75rem;
   }
 
   .chat-header {

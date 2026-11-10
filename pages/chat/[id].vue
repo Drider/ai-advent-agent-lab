@@ -13,6 +13,7 @@ interface SessionListResponse {
 const route = useRoute()
 const config = useRuntimeConfig()
 const defaultModel = config.public.chatDefaultModel
+const modelId = shallowRef(defaultModel)
 const session = shallowRef<SessionDetail | null>(null)
 const sessions = shallowRef<SessionSummary[]>([])
 const nextCursor = shallowRef<string | undefined>()
@@ -31,7 +32,9 @@ async function loadSession(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    session.value = await $fetch<SessionDetail>(`/api/sessions/${sessionId.value}`)
+    const loadedSession = await $fetch<SessionDetail>(`/api/sessions/${sessionId.value}`)
+    session.value = loadedSession
+    modelId.value = loadedSession.lastTurn?.modelId ?? defaultModel
   } catch (caughtError) {
     session.value = null
     error.value = caughtError instanceof Error ? caughtError.message : 'Сессия не найдена'
@@ -91,6 +94,8 @@ watch(sessionId, () => {
     <ChatSessionList
       :items="visibleSessions"
       :selected-id="session.id"
+      v-model:model-value="modelId"
+      :default-model="defaultModel"
       :loading="listLoading"
       :disabled="workspaceBusy"
       :has-more="Boolean(nextCursor)"
@@ -101,7 +106,7 @@ watch(sessionId, () => {
     <ChatWorkspace
       :key="session.id"
       :session="session"
-      :default-model="defaultModel"
+      :model-id="modelId"
       @new-session="handleNewSession"
       @updated="handleUpdated"
       @busy-change="workspaceBusy = $event"
