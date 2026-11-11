@@ -4,12 +4,14 @@ import {
   MAX_FIND_RESULTS,
   MAX_PATH_LENGTH,
   MAX_PATTERN_LENGTH,
+  MAX_PDF_BYTES,
   MAX_SCAN_ENTRIES,
   MAX_TEXT_BYTES,
   failure,
   success,
   type FindFilesData,
   type ReadFileData,
+  type ReadPdfData,
   type ToolResult,
   type WriteFileData,
 } from './file-tool-contracts'
@@ -80,6 +82,26 @@ function decodeText(buffer: Buffer): ToolResult<string> {
   } catch {
     return failure('NOT_TEXT', 'file is not valid UTF-8 text')
   }
+}
+
+function pdfTextChunk(text: string, offset: number): ToolResult<{ text: string; nextOffset: number | null }> {
+  let position = 0
+  let bytes = 0
+  const chunk: string[] = []
+
+  for (const character of text) {
+    if (position++ < offset) continue
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > MAX_TEXT_BYTES) {
+      return success({ text: chunk.join(''), nextOffset: position - 1 })
+    }
+    bytes += characterBytes
+    chunk.push(character)
+  }
+
+  return offset > position
+    ? failure('INVALID_INPUT', 'offset exceeds the page text length')
+    : success({ text: chunk.join(''), nextOffset: null })
 }
 
 function validatePattern(pattern: string): ToolResult<void> {
@@ -207,6 +229,72 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
     return result.ok ? success({ path: relativePath, text: result.data }) : result
   }
 
+  async function readPdf(path: string, page = 1, offset = 0): Promise<ToolResult<ReadPdfData>> {
+    if (typeof path !== 'string' || !validateRelativePath(path, MAX_PATH_LENGTH)) {
+      return invalidPath(typeof path === 'string' ? path : '')
+    }
+    if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(offset) || offset < 0) {
+      return failure('INVALID_INPUT', 'page must be positive and offset must be non-negative integers')
+    }
+
+    const relativePath = toRelativePath(path)
+    if (!relativePath.toLowerCase().endsWith('.pdf')) {
+      return failure('INVALID_PDF', 'path must point to a PDF file')
+    }
+    const absolutePath = resolve(absoluteRoot, ...relativePath.split('/'))
+    if (!isInsideRoot(absoluteRoot, absolutePath)) return invalidPath(path)
+    const pathCheck = await rejectSymlinkComponents(absoluteRoot, relativePath, false)
+    if (!pathCheck.ok) return pathCheck
+
+    let fileHandle
+    let buffer: Buffer
+    try {
+      fileHandle = await open(absolutePath, 'r')
+      const stats = await fileHandle.stat()
+      if (!stats.isFile()) return failure('NOT_A_FILE', 'path is not a regular file')
+      if (stats.size > MAX_PDF_BYTES) return failure('TOO_LARGE', `PDF exceeds ${MAX_PDF_BYTES} bytes`)
+
+      buffer = Buffer.alloc(stats.size + 1)
+      let bytesRead = 0
+      while (bytesRead < buffer.length) {
+        const result = await fileHandle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+        if (result.bytesRead === 0) break
+        bytesRead += result.bytesRead
+      }
+      if (bytesRead > MAX_PDF_BYTES) return failure('TOO_LARGE', `PDF exceeds ${MAX_PDF_BYTES} bytes`)
+      buffer = buffer.subarray(0, bytesRead)
+    } catch (error) {
+      if (isMissing(error)) return failure('NOT_FOUND', 'file was not found')
+      return failure('IO_ERROR', 'could not read the requested PDF')
+    } finally {
+      await fileHandle?.close().catch(() => undefined)
+    }
+
+    if (buffer.subarray(0, 1024).indexOf('%PDF-') === -1) {
+      return failure('INVALID_PDF', 'file is not a valid PDF')
+    }
+
+    try {
+      const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs')
+      const task = getDocument({ data: new Uint8Array(buffer), useSystemFonts: true })
+      try {
+        const document = await task.promise
+        if (page > document.numPages) return failure('INVALID_INPUT', 'page exceeds the PDF page count')
+        const pdfPage = await document.getPage(page)
+        const content = await pdfPage.getTextContent()
+        const text = content.items.map(item => 'str' in item ? `${item.str}${item.hasEOL ? '\n' : ' '}` : '').join('').trimEnd()
+        const chunk = pdfTextChunk(text, offset)
+        return chunk.ok
+          ? success({ path: relativePath, page, totalPages: document.numPages, ...chunk.data })
+          : chunk
+      } finally {
+        await task.destroy()
+      }
+    } catch {
+      return failure('INVALID_PDF', 'could not extract text from the PDF')
+    }
+  }
+
   async function writeFile(path: string, content: string): Promise<ToolResult<WriteFileData>> {
     if (typeof path !== 'string' || !validateRelativePath(path, MAX_PATH_LENGTH)) {
       return invalidPath(typeof path === 'string' ? path : '')
@@ -254,6 +342,7 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
   return {
     findFiles,
     readFile,
+    readPdf,
     writeFile,
   }
 }

@@ -19,10 +19,10 @@ afterEach(async () => {
 })
 
 describe('createFileTools', () => {
-  it('exposes the five expected tools and validates their input schemas', () => {
+  it('exposes the six expected tools and validates their input schemas', () => {
     const tools = createFileTools({ rootDir })
 
-    expect(Object.keys(tools)).toEqual(['find_files', 'read_file', 'search_text', 'text_stats', 'write_file'])
+    expect(Object.keys(tools)).toEqual(['find_files', 'read_file', 'read_pdf', 'search_text', 'text_stats', 'write_file'])
     expect(safeParse(tools.find_files.inputSchema, { pattern: 'notes/*.md' }).success).toBe(true)
     expect(safeParse(tools.find_files.inputSchema, { pattern: '' }).success).toBe(false)
     expect(safeParse(tools.read_file.inputSchema, { path: 'notes/a.md' }).success).toBe(true)

@@ -21,7 +21,7 @@ export function createFileTools(options: { rootDir?: string } = {}) {
 
   return {
     find_files: tool({
-      description: 'Find regular text files under the configured workspace using a relative glob such as notes/*.md. Returns sorted relative paths and a truncation flag.',
+      description: 'Find regular files under the configured workspace using a relative glob such as notes/*.md or documents/*.pdf. Returns sorted relative paths and a truncation flag.',
       inputSchema: z.object({
         pattern: patternSchema.describe('Relative glob pattern, for example notes/*.md or notes/**/*.md'),
       }),
@@ -33,6 +33,15 @@ export function createFileTools(options: { rootDir?: string } = {}) {
         path: relativePathSchema.describe('Relative file path inside the workspace'),
       }),
       execute: ({ path }) => workspace.readFile(path),
+    }),
+    read_pdf: tool({
+      description: 'Extract text from one PDF up to 20 MiB in the workspace. Read one page at a time; nextOffset gives the next chunk of the same page, or null when the page is complete. Scanned pages without a text layer return empty text.',
+      inputSchema: z.object({
+        path: relativePathSchema.describe('Relative path to a .pdf file inside the workspace'),
+        page: z.number().int().positive().optional().describe('1-based page number; defaults to 1'),
+        offset: z.number().int().nonnegative().optional().describe('Unicode character offset within the page; defaults to 0'),
+      }),
+      execute: ({ path, page, offset }) => workspace.readPdf(path, page, offset),
     }),
     search_text: tool({
       description: 'Search literal, case-sensitive text in supplied content by line. This does not interpret the query as a regular expression.',

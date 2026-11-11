@@ -1,4 +1,5 @@
 export const MAX_TEXT_BYTES = 16 * 1024
+export const MAX_PDF_BYTES = 20 * 1024 * 1024
 export const MAX_PATH_LENGTH = 512
 export const MAX_PATTERN_LENGTH = 256
 export const MAX_QUERY_LENGTH = 256
@@ -14,6 +15,7 @@ export type ToolErrorCode =
   | 'ALREADY_EXISTS'
   | 'TOO_LARGE'
   | 'NOT_TEXT'
+  | 'INVALID_PDF'
   | 'SCAN_LIMIT'
   | 'IO_ERROR'
 
@@ -29,6 +31,14 @@ export interface FindFilesData {
 export interface ReadFileData {
   path: string
   text: string
+}
+
+export interface ReadPdfData {
+  path: string
+  page: number
+  totalPages: number
+  text: string
+  nextOffset: number | null
 }
 
 export interface WriteFileData {
