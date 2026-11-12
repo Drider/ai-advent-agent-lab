@@ -54,4 +54,4 @@
 
 ## Реализация
 
-Расход по шагам собирается в [`chat-agent.ts`](../server/agent/chat-agent.ts), расчёты окна и стоимости находятся в [`chat.ts`](../shared/chat.ts), а показатели выводятся в [`ChatWorkspace.vue`](../components/ChatWorkspace.vue) и [`ChatRequestMetrics.vue`](../components/ChatRequestMetrics.vue). Настройки стоимости задаются в [`ChatCostSettings.vue`](../components/ChatCostSettings.vue).
+Расход по шагам и поля провайдера обрабатываются в [`token-usage.ts`](../server/agent/token-usage.ts); [`chat-agent.ts`](../server/agent/chat-agent.ts) добавляет статистику к ответу. Расчёты окна и стоимости находятся в [`chat.ts`](../shared/chat.ts), а показатели выводятся в [`ChatWorkspace.vue`](../components/ChatWorkspace.vue) и [`ChatRequestMetrics.vue`](../components/ChatRequestMetrics.vue). Настройки стоимости задаются в [`ChatCostSettings.vue`](../components/ChatCostSettings.vue).
