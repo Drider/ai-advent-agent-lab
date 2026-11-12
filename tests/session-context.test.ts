@@ -34,7 +34,7 @@ afterEach(async () => {
 })
 
 describe('session context', () => {
-  it('rejects more than 100 stored messages without truncating session history', async () => {
+  it('passes every stored message to the model after the 100-message boundary', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessions = createSessionRepository(db)
     const session = sessions.createSession()
@@ -46,22 +46,30 @@ describe('session context', () => {
       }, position)
     }
 
-    await expect(buildSessionContext(session.id, sessions)).rejects.toMatchObject({ code: 'CONTEXT_LIMIT_REACHED' })
+    const context = await buildSessionContext(session.id, sessions)
+    expect(context).toHaveLength(101)
+    expect(context[0]?.parts).toEqual([{ type: 'text', text: 'message 0' }])
+    expect(context[100]?.parts).toEqual([{ type: 'text', text: 'message 100' }])
     expect((await sessions.getSession(session.id))?.messages).toHaveLength(101)
     db.close()
   })
 
-  it('rejects a serialized context larger than 256 KiB', async () => {
+  it('passes a stored context larger than 256 KiB without trimming it', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessions = createSessionRepository(db)
     const session = sessions.createSession()
-    saveMessage(db, session.id, {
-      id: randomUUID(),
-      role: 'user',
-      parts: [{ type: 'text', text: 'x'.repeat(260 * 1024) }],
-    }, 0)
+    for (let position = 0; position < 30; position += 1) {
+      saveMessage(db, session.id, {
+        id: randomUUID(),
+        role: position % 2 === 0 ? 'user' : 'assistant',
+        parts: [{ type: 'text', text: 'x'.repeat(9 * 1024) }],
+      }, position)
+    }
 
-    await expect(buildSessionContext(session.id, sessions)).rejects.toMatchObject({ code: 'CONTEXT_LIMIT_REACHED' })
+    const context = await buildSessionContext(session.id, sessions)
+    expect(context).toHaveLength(30)
+    expect(context[0]?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
+    expect(context[29]?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
     db.close()
   })
 

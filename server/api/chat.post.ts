@@ -100,9 +100,6 @@ export default defineEventHandler(async (event) => {
     messages = await buildSessionContext(request.sessionId, sessions)
   } catch (error) {
     turns.markFailed(turnId)
-    if (error instanceof SessionContextError && error.code === 'CONTEXT_LIMIT_REACHED') {
-      throw createError({ statusCode: 413, statusMessage: error.message })
-    }
     if (error instanceof SessionContextError && error.code === 'SESSION_NOT_FOUND') {
       throw createError({ statusCode: 404, statusMessage: error.message })
     }
@@ -131,6 +128,7 @@ export default defineEventHandler(async (event) => {
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,
+      pricing: request.pricing,
       sessionId: request.sessionId,
       turnId,
       turnRepository: turns,

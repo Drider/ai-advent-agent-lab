@@ -319,6 +319,14 @@ textarea {
 
 .chat-header__copy {
   min-width: 0;
+  padding: 0.5rem 0;
+}
+
+.chat-token-total {
+  margin: 0.25rem 0 0;
+  color: #64748b;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-header h1 {

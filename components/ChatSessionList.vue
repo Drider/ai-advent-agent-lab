@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { SessionSummary } from '~/shared/chat'
+import type { ChatCostSettings, SessionSummary } from '~/shared/chat'
+
+const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
 
 const props = defineProps<{
   items: SessionSummary[]
@@ -47,6 +49,7 @@ function formatDate(value: string): string {
       :default-model="props.defaultModel"
       @update:model-value="emit('update:modelValue', $event)"
     />
+    <ChatCostSettings v-model="costSettings" />
 
     <div class="session-sidebar__header">
       <div>

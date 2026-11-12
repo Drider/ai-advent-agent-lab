@@ -8,7 +8,7 @@ import {
   type Tool,
   type UIMessage,
 } from 'ai'
-import type { ChatMessageMetadata, ChatUIMessage } from '../../shared/chat'
+import { calculateChatCost, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
 import { appendRunLogEntry, type RunLogEntry, type RunLogLevel } from '../utils/run-logger'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createFileTools, type FileTools } from '../tools/files'
@@ -158,6 +158,7 @@ export async function streamChatAgent(input: {
   abortSignal?: AbortSignal
   runId: string
   logLevel: RunLogLevel
+  pricing?: ChatPricing
   sessionId?: string
   turnId?: string
   turnRepository?: ReturnType<typeof createTurnRepository>
@@ -339,13 +340,16 @@ export async function streamChatAgent(input: {
     },
     messageMetadata: ({ part }) => {
       if (part.type === 'finish') {
+        const usage = {
+          inputTokens: part.totalUsage.inputTokens,
+          outputTokens: part.totalUsage.outputTokens,
+          totalTokens: part.totalUsage.totalTokens,
+        }
+        const costRub = calculateChatCost(usage, input.pricing)
         return {
           durationMs: Date.now() - startedAtMs,
-          usage: {
-            inputTokens: part.totalUsage.inputTokens,
-            outputTokens: part.totalUsage.outputTokens,
-            totalTokens: part.totalUsage.totalTokens,
-          },
+          usage,
+          ...(costRub === undefined ? {} : { costRub }),
         } satisfies ChatMessageMetadata
       }
     },

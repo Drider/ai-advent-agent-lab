@@ -2,7 +2,7 @@
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import ChatSessionList from '~/components/ChatSessionList.vue'
 import ChatWorkspace from '~/components/ChatWorkspace.vue'
-import type { SessionDetail, SessionSummary } from '~/shared/chat'
+import { pricingFromSettings, type ChatCostSettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -14,6 +14,8 @@ const route = useRoute()
 const config = useRuntimeConfig()
 const defaultModel = config.public.chatDefaultModel
 const modelId = shallowRef(defaultModel)
+const costSettings = shallowRef<ChatCostSettings>({ enabled: false, inputPrice: '', outputPrice: '' })
+const pricing = computed(() => pricingFromSettings(costSettings.value))
 const session = shallowRef<SessionDetail | null>(null)
 const sessions = shallowRef<SessionSummary[]>([])
 const nextCursor = shallowRef<string | undefined>()
@@ -71,7 +73,27 @@ async function handleUpdated(): Promise<void> {
 }
 
 onMounted(async () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('agent-chat-cost-settings-v1') ?? 'null') as unknown
+    if (saved && typeof saved === 'object'
+      && 'enabled' in saved && typeof saved.enabled === 'boolean'
+      && 'inputPrice' in saved && typeof saved.inputPrice === 'string'
+      && 'outputPrice' in saved && typeof saved.outputPrice === 'string') {
+      costSettings.value = saved as ChatCostSettings
+    }
+  } catch {
+    // A missing or malformed local preference leaves the calculation disabled.
+  }
   await Promise.all([loadSession(), loadSessions()])
+})
+
+watch(costSettings, value => {
+  if (!import.meta.client) return
+  try {
+    localStorage.setItem('agent-chat-cost-settings-v1', JSON.stringify(value))
+  } catch {
+    // The calculation still works when browser storage is unavailable.
+  }
 })
 
 watch(sessionId, () => {
@@ -95,6 +117,7 @@ watch(sessionId, () => {
       :items="visibleSessions"
       :selected-id="session.id"
       v-model:model-value="modelId"
+      v-model:cost-settings="costSettings"
       :default-model="defaultModel"
       :loading="listLoading"
       :disabled="workspaceBusy"
@@ -107,6 +130,8 @@ watch(sessionId, () => {
       :key="session.id"
       :session="session"
       :model-id="modelId"
+      :pricing="pricing"
+      :show-cost="costSettings.enabled"
       @new-session="handleNewSession"
       @updated="handleUpdated"
       @busy-change="workspaceBusy = $event"

@@ -3,9 +3,73 @@ import type { LanguageModelUsage, UIMessage } from 'ai'
 export interface ChatMessageMetadata {
   durationMs: number
   usage: Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
+  costRub?: ChatCostRub
+}
+
+export interface ChatPricing {
+  inputPerMillionRub: number
+  outputPerMillionRub: number
+}
+
+export interface ChatCostSettings {
+  enabled: boolean
+  inputPrice: string
+  outputPrice: string
+}
+
+export function pricingFromSettings(settings: ChatCostSettings): ChatPricing | undefined {
+  if (!settings.enabled) return undefined
+
+  const parsePrice = (value: string): number | undefined => {
+    const normalized = value.replace(/\s/gu, '').replace(',', '.')
+    if (!/^\d+(?:\.\d+)?$/u.test(normalized)) return undefined
+    const price = Number(normalized)
+    return Number.isFinite(price) ? price : undefined
+  }
+
+  const inputPerMillionRub = parsePrice(settings.inputPrice)
+  const outputPerMillionRub = parsePrice(settings.outputPrice)
+  if (inputPerMillionRub === undefined || outputPerMillionRub === undefined) return undefined
+  return { inputPerMillionRub, outputPerMillionRub }
+}
+
+export interface ChatCostRub {
+  input: number
+  output: number
+  total: number
+}
+
+export function calculateChatCost(
+  usage: ChatMessageMetadata['usage'],
+  pricing: ChatPricing | undefined,
+): ChatCostRub | undefined {
+  if (!pricing || usage.inputTokens === undefined || usage.outputTokens === undefined) {
+    return undefined
+  }
+
+  const input = usage.inputTokens * pricing.inputPerMillionRub / 1_000_000
+  const output = usage.outputTokens * pricing.outputPerMillionRub / 1_000_000
+  return { input, output, total: input + output }
 }
 
 export type ChatUIMessage = UIMessage<ChatMessageMetadata>
+
+export function dialogueTokenTotal(messages: ChatUIMessage[]): number {
+  return messages.reduce((total, message) => {
+    return total + (message.role === 'assistant' ? message.metadata?.usage.totalTokens ?? 0 : 0)
+  }, 0)
+}
+
+export function dialogueCostTotals(messages: ChatUIMessage[]): Map<string, number> {
+  const totals = new Map<string, number>()
+  let total = 0
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !message.metadata?.costRub) continue
+    total += message.metadata.costRub.total
+    totals.set(message.id, total)
+  }
+  return totals
+}
 
 export const CHAT_MESSAGE_STORAGE_VERSION = 1
 
@@ -43,10 +107,8 @@ export interface SessionDetail extends SessionSummary {
 }
 
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
-export const MAX_CHAT_MESSAGES = 100
 export const MAX_LAST_USER_MESSAGE_LENGTH = 10_000
 export const MAX_MODEL_ID_LENGTH = 200
-export const MAX_CHAT_CONTEXT_BYTES = 256 * 1024
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
@@ -56,6 +118,7 @@ export type ChatRequestBody =
       sessionId: string
       requestId: string
       model?: string
+      pricing?: ChatPricing
       message: UIMessage
     }
   | {
@@ -64,10 +127,28 @@ export type ChatRequestBody =
       requestId: string
       sourceTurnId: string
       model?: string
+      pricing?: ChatPricing
     }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function validatePricing(input: unknown): ChatPricing | undefined {
+  if (input === undefined) return undefined
+  if (!isRecord(input)
+    || typeof input.inputPerMillionRub !== 'number'
+    || !Number.isFinite(input.inputPerMillionRub)
+    || input.inputPerMillionRub < 0
+    || typeof input.outputPerMillionRub !== 'number'
+    || !Number.isFinite(input.outputPerMillionRub)
+    || input.outputPerMillionRub < 0) {
+    throw new Error('pricing must contain non-negative finite ruble rates')
+  }
+  return {
+    inputPerMillionRub: input.inputPerMillionRub,
+    outputPerMillionRub: input.outputPerMillionRub,
+  }
 }
 
 function isUIMessageLike(value: unknown): value is UIMessage {
@@ -136,6 +217,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
   }
 
   const model = input.model === undefined ? undefined : validateModelId(input.model)
+  const pricing = validatePricing(input.pricing)
 
   if (input.kind === 'continue') {
     if (typeof input.sourceTurnId !== 'string' || !UUID_PATTERN.test(input.sourceTurnId)) {
@@ -148,6 +230,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
       requestId: input.requestId,
       sourceTurnId: input.sourceTurnId,
       ...(model === undefined ? {} : { model }),
+      ...(pricing === undefined ? {} : { pricing }),
     }
   }
 
@@ -173,5 +256,6 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
     requestId: input.requestId,
     message: input.message,
     ...(model === undefined ? {} : { model }),
+    ...(pricing === undefined ? {} : { pricing }),
   }
 }

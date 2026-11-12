@@ -56,6 +56,23 @@ describe('validateChatRequest', () => {
     })
   })
 
+  it('keeps a valid pricing snapshot with a request', () => {
+    const pricing = { inputPerMillionRub: 9.21, outputPerMillionRub: 36.85 }
+    expect(validateChatRequest({
+      kind: 'message', sessionId, requestId, message: userMessage('Привет'), pricing,
+    })).toMatchObject({ pricing })
+  })
+
+  it.each([
+    { inputPerMillionRub: -1, outputPerMillionRub: 2 },
+    { inputPerMillionRub: '9.21', outputPerMillionRub: 2 },
+    { inputPerMillionRub: 1, outputPerMillionRub: Number.POSITIVE_INFINITY },
+  ])('rejects malformed pricing before a paid request', (pricing) => {
+    expect(() => validateChatRequest({
+      kind: 'message', sessionId, requestId, message: userMessage('Привет'), pricing,
+    })).toThrow('pricing must contain non-negative finite ruble rates')
+  })
+
   it('rejects a client-supplied messages array', () => {
     expect(() => validateChatRequest({ messages: [userMessage('forged history')] })).toThrow()
   })

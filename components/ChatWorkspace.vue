@@ -3,11 +3,13 @@ import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
-import type { ChatRequestBody, ChatSessionStatus, ChatUIMessage, SessionDetail } from '~/shared/chat'
+import { dialogueCostTotals, dialogueTokenTotal, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 
 const props = defineProps<{
   session: SessionDetail
   modelId: string
+  pricing?: ChatPricing
+  showCost: boolean
 }>()
 
 const emit = defineEmits<{
@@ -48,6 +50,7 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
         requestId,
         message,
         model: props.modelId,
+        ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
       } satisfies ChatRequestBody,
     }
   },
@@ -74,6 +77,9 @@ const {
 })
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
+const dialogueTotals = computed(() => dialogueCostTotals(messages.value))
+const tokenFormatter = new Intl.NumberFormat('ru-RU')
+const totalDialogueTokens = computed(() => tokenFormatter.format(dialogueTokenTotal(messages.value)))
 const canContinue = computed(() => !isBusy.value && ['interrupted', 'stopped', 'failed'].includes(lastTurnStatus.value))
 const needsReview = computed(() => lastTurnStatus.value === 'needs_review' || props.session.status === 'needs_review')
 const statusLabel = computed(() => {
@@ -137,6 +143,7 @@ async function handleContinue(): Promise<void> {
         requestId,
         sourceTurnId,
         model: props.modelId,
+        ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
       } satisfies ChatRequestBody,
     })
   } catch (caughtError) {
@@ -169,6 +176,9 @@ onMounted(() => {
       <div class="chat-header__copy">
         <p class="chat-eyebrow" :title="props.modelId">AI SDK · {{ props.modelId }}</p>
         <h1>{{ session.title }}</h1>
+        <p class="chat-token-total" title="Сумма токенов по доступной статистике API за все запросы диалога, включая повторную передачу истории. Лимит контекста применяется к каждому запросу.">
+          Токены за диалог: {{ totalDialogueTokens }}
+        </p>
       </div>
       <div class="chat-header__actions">
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
@@ -200,7 +210,12 @@ onMounted(() => {
             <p v-else-if="isTextUIPart(part)" class="user-message-text">{{ part.text }}</p>
             <ChatToolCall v-else-if="message.role === 'assistant' && isToolUIPart(part)" :part="part" :is-active="isBusy && message.id === messages.at(-1)?.id" />
           </template>
-          <ChatRequestMetrics v-if="message.role === 'assistant' && message.metadata" :metadata="message.metadata" />
+          <ChatRequestMetrics
+            v-if="message.role === 'assistant' && message.metadata"
+            :metadata="message.metadata"
+            :show-cost="props.showCost"
+            :dialogue-cost-rub="dialogueTotals.get(message.id)"
+          />
         </div>
       </template>
     </UChatMessages>

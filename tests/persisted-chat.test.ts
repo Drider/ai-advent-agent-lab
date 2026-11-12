@@ -64,6 +64,7 @@ describe('persisted chat stream', () => {
       messages: [message],
       runId: session.runLogId,
       logLevel: 'off',
+      pricing: { inputPerMillionRub: 10, outputPerMillionRub: 40 },
       sessionId: session.id,
       turnId,
       turnRepository: turns,
@@ -78,6 +79,9 @@ describe('persisted chat stream', () => {
       type: 'text',
       text: 'Ответ',
     })
+    expect(detail?.messages.at(-1)?.metadata?.costRub?.input).toBeCloseTo(0.0001)
+    expect(detail?.messages.at(-1)?.metadata?.costRub?.output).toBeCloseTo(0.0002)
+    expect(detail?.messages.at(-1)?.metadata?.costRub?.total).toBeCloseTo(0.0003)
     expect(detail?.lastTurn?.status).toBe('completed')
     reopenedDb.close()
   })

@@ -1,6 +1,8 @@
 .env
+.DS_Store
 .nuxt
 .output
+.superpowers/
 node_modules
 data/runs
 data/dice-rolls.csv

@@ -501,15 +501,20 @@ describe('chat agent', () => {
         messages: [userMessage('Брось d20')],
         runId: '2026-11-09T12:00:00.000Z',
         logLevel: 'off',
+        pricing: { inputPerMillionRub: 10, outputPerMillionRub: 40 },
       }, createTestDiceTool(fixedDraw(17)))
       const chunks = (await response.text()).split('\n')
         .filter(line => line.startsWith('data: {'))
         .map(line => JSON.parse(line.slice(6)))
 
-      expect(chunks.find(chunk => chunk.type === 'finish')?.messageMetadata).toEqual({
+      const metadata = chunks.find(chunk => chunk.type === 'finish')?.messageMetadata
+      expect(metadata).toMatchObject({
         durationMs: 3_500,
         usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
       })
+      expect(metadata.costRub.input).toBeCloseTo(0.0002)
+      expect(metadata.costRub.output).toBeCloseTo(0.0004)
+      expect(metadata.costRub.total).toBeCloseTo(0.0006)
     } finally {
       clock.mockRestore()
     }
@@ -529,6 +534,7 @@ describe('chat agent', () => {
       messages: [userMessage('Привет')],
       runId: '2026-11-09T12:00:00.000Z',
       logLevel: 'off',
+      pricing: { inputPerMillionRub: 10, outputPerMillionRub: 40 },
     })
     const chunks = (await response.text()).split('\n')
       .filter(line => line.startsWith('data: {'))

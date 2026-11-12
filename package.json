@@ -31,5 +31,10 @@
     "typescript": "5.9.3",
     "vitest": "5.1.0",
     "vue-tsc": "3.3.14"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "fsevents@2.3.3": true,
+    "esbuild@0.28.2": true
   }
 }
