@@ -3,19 +3,23 @@ import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
-import { dialogueCostTotals, dialogueTokenTotal, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
+import { dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 
 const props = defineProps<{
   session: SessionDetail
   modelId: string
+  contextLimit: string
   pricing?: ChatPricing
   showCost: boolean
+  showDetailedStatistics?: boolean
+  operationError?: string | null
 }>()
 
 const emit = defineEmits<{
   newSession: []
   updated: []
   busyChange: [busy: boolean]
+  dismissOperationError: []
 }>()
 
 const draft = shallowRef('')
@@ -31,9 +35,11 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
   api: '/api/chat',
   prepareSendMessagesRequest: ({ messages, body }) => {
     if (body && body.kind === 'continue') {
+      const message = messages.at(-1)
+      if (!message || message.role !== 'user') throw new Error('Cannot continue without a user message')
       activeRequestId.value = body.requestId
       lastKnownTurnId.value = body.requestId
-      return { body }
+      return { body: { ...body, message } }
     }
 
     const message = messages.at(-1)
@@ -68,9 +74,10 @@ const {
   messages: props.session.messages,
   transport,
   onFinish: ({ isAbort, isError }) => {
+    const reachedStepLimit = messages.value.at(-1)?.metadata?.stopReason === 'step_limit'
     lastTurnStatus.value = isAbort
       ? lastTurnStatus.value === 'stopped' ? 'stopped' : 'interrupted'
-      : isError ? 'failed' : 'completed'
+      : isError ? 'failed' : reachedStepLimit ? 'interrupted' : 'completed'
     activeRequestId.value = null
     emit('updated')
   },
@@ -78,10 +85,29 @@ const {
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
 const dialogueTotals = computed(() => dialogueCostTotals(messages.value))
+const totalDialogueCost = computed(() => [...dialogueTotals.value.values()].at(-1))
 const tokenFormatter = new Intl.NumberFormat('ru-RU')
-const totalDialogueTokens = computed(() => tokenFormatter.format(dialogueTokenTotal(messages.value)))
-const canContinue = computed(() => !isBusy.value && ['interrupted', 'stopped', 'failed'].includes(lastTurnStatus.value))
-const needsReview = computed(() => lastTurnStatus.value === 'needs_review' || props.session.status === 'needs_review')
+const costFormatter = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+const formatCost = (amount: number) => `${costFormatter.format(amount)} ₽`
+const contextModelMatches = computed(() => props.session.lastTurn?.modelId === props.modelId)
+const contextUsage = computed(() => latestContextUsage(
+  messages.value,
+  contextModelMatches.value ? parseContextLimit(props.contextLimit) : undefined,
+))
+const currentTurn = computed(() => props.session.lastTurn?.id === lastKnownTurnId.value ? props.session.lastTurn : null)
+const isStopped = computed(() => !isBusy.value && ['interrupted', 'stopped', 'failed'].includes(lastTurnStatus.value))
+const canContinue = computed(() => isStopped.value && currentTurn.value?.continuation === 'safe')
+const needsReview = computed(() => lastTurnStatus.value === 'needs_review' || currentTurn.value?.continuation === 'needs_review')
+const stopReason = computed(() => currentTurn.value?.stopReason
+  ?? (lastTurnStatus.value === 'interrupted' ? messages.value.at(-1)?.metadata?.stopReason : undefined))
+const visibleErrors = computed(() => [
+  continuationError.value,
+  error.value?.message || (error.value ? 'Не удалось получить ответ модели.' : null),
+  props.operationError,
+].filter((message): message is string => Boolean(message)))
 const statusLabel = computed(() => {
   switch (true) {
     case status.value === 'submitted':
@@ -90,9 +116,13 @@ const statusLabel = computed(() => {
       return 'Генерация'
     case needsReview.value:
       return 'Нужна проверка'
-    case canContinue.value && lastTurnStatus.value === 'stopped':
+    case stopReason.value === 'step_limit' && lastTurnStatus.value === 'interrupted':
+      return 'Не завершено'
+    case lastTurnStatus.value === 'stopped':
       return 'Остановлен'
-    case canContinue.value:
+    case lastTurnStatus.value === 'failed':
+      return 'Ошибка'
+    case lastTurnStatus.value === 'interrupted':
       return 'Прерван'
     case status.value === 'error':
       return 'Ошибка'
@@ -102,6 +132,9 @@ const statusLabel = computed(() => {
 })
 
 watch(isBusy, busy => emit('busyChange', busy), { immediate: true })
+watch(() => props.session.lastTurn, turn => {
+  if (turn?.id === lastKnownTurnId.value) lastTurnStatus.value = turn.status
+})
 
 async function handleSubmit(event?: Event): Promise<void> {
   event?.preventDefault()
@@ -110,7 +143,12 @@ async function handleSubmit(event?: Event): Promise<void> {
   clearError()
   continuationError.value = null
   draft.value = ''
-  await sendMessage({ text })
+  try {
+    await sendMessage({ text })
+  } catch (caughtError) {
+    continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось отправить сообщение'
+    draft.value = text
+  }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -136,7 +174,7 @@ async function handleContinue(): Promise<void> {
   const requestId = crypto.randomUUID()
   activeRequestId.value = requestId
   try {
-    await sendMessage(undefined, {
+    await sendMessage({ text: 'Продолжи выполнение предыдущего запроса.' }, {
       body: {
         kind: 'continue',
         sessionId: props.session.id,
@@ -144,7 +182,7 @@ async function handleContinue(): Promise<void> {
         sourceTurnId,
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
-      } satisfies ChatRequestBody,
+      } satisfies Omit<Extract<ChatRequestBody, { kind: 'continue' }>, 'message'>,
     })
   } catch (caughtError) {
     continuationError.value = caughtError instanceof Error ? caughtError.message : 'Продолжение недоступно'
@@ -162,12 +200,24 @@ async function handleStop(): Promise<void> {
       continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось остановить ход'
     }
   }
-  await stop()
+  try {
+    await stop()
+  } catch (caughtError) {
+    continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось остановить генерацию'
+  }
 }
 
 onMounted(() => {
-  void $fetch(`/api/sessions/${props.session.id}/activate`, { method: 'POST' }).catch(() => undefined)
+  void $fetch(`/api/sessions/${props.session.id}/activate`, { method: 'POST' }).catch(() => {
+    continuationError.value = 'Не удалось активировать диалог.'
+  })
 })
+
+function dismissError(): void {
+  continuationError.value = null
+  clearError()
+  emit('dismissOperationError')
+}
 </script>
 
 <template>
@@ -176,9 +226,19 @@ onMounted(() => {
       <div class="chat-header__copy">
         <p class="chat-eyebrow" :title="props.modelId">AI SDK · {{ props.modelId }}</p>
         <h1>{{ session.title }}</h1>
-        <p class="chat-token-total" title="Сумма токенов по доступной статистике API за все запросы диалога, включая повторную передачу истории. Лимит контекста применяется к каждому запросу.">
-          Токены за диалог: {{ totalDialogueTokens }}
-        </p>
+        <div class="chat-context-usage" aria-label="Использование контекстного окна">
+          <p v-if="contextUsage?.kind === 'limited'">
+            Последнее обращение: {{ tokenFormatter.format(contextUsage.occupiedTokens) }} / {{ tokenFormatter.format(contextUsage.limit) }} токенов ({{ contextUsage.percent }} %)
+            · вход {{ tokenFormatter.format(contextUsage.inputTokens) }} + выход {{ tokenFormatter.format(contextUsage.outputTokens) }}
+            · до лимита: {{ tokenFormatter.format(contextUsage.remaining) }}
+            <span v-if="props.showCost && totalDialogueCost !== undefined"> · Общая стоимость диалога: {{ formatCost(totalDialogueCost) }}</span>
+          </p>
+          <p v-else-if="contextUsage?.kind === 'measured'">Последнее обращение: {{ tokenFormatter.format(contextUsage.occupiedTokens) }} токенов (вход {{ tokenFormatter.format(contextUsage.inputTokens) }} + выход {{ tokenFormatter.format(contextUsage.outputTokens) }}) · {{ contextModelMatches ? 'задайте лимит модели для расчёта доли' : 'модель изменена, лимит прошлого обращения неизвестен' }}</p>
+          <p v-else-if="contextUsage">Вход последнего обращения: {{ tokenFormatter.format(contextUsage.inputTokens) }} токенов · выход неизвестен, долю окна рассчитать нельзя</p>
+          <p v-else>Последнее обращение: нет данных о токенах</p>
+          <progress v-if="contextUsage?.kind === 'limited'" :value="Math.min(contextUsage.occupiedTokens, contextUsage.limit)" :max="contextUsage.limit" aria-label="Доля контекстного окна, занятая последним обращением" />
+          <p class="chat-context-usage__hint">Лимит действует на одно обращение к модели. Вход уже включает историю и токены из кэша; выход включает размышления.</p>
+        </div>
       </div>
       <div class="chat-header__actions">
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
@@ -188,13 +248,14 @@ onMounted(() => {
       </div>
     </header>
 
-    <div v-if="canContinue || needsReview" class="chat-interruption" :class="{ 'chat-interruption--warning': needsReview }" role="status">
-      <div>
-        <strong>{{ needsReview ? 'Нужна проверка перед продолжением' : 'Ответ был прерван' }}</strong>
-        <p>{{ needsReview ? 'Результат побочного действия нельзя подтвердить автоматически. Отправьте новый запрос, если нужно продолжить диалог.' : 'Сохранённая история не запускает инструменты повторно.' }}</p>
-      </div>
-      <UButton v-if="canContinue && !needsReview" size="sm" color="neutral" variant="soft" @click="handleContinue">Продолжить</UButton>
-    </div>
+    <ChatInterruptionNotice
+      v-if="isStopped || needsReview"
+      :status="lastTurnStatus"
+      :stop-reason="stopReason"
+      :can-continue="canContinue"
+      :needs-review="needsReview"
+      @continue="handleContinue"
+    />
 
     <div v-if="messages.length === 0" class="chat-empty-state">
       <div class="chat-empty-state__mark"><UIcon name="i-lucide-sparkles" /></div>
@@ -214,15 +275,16 @@ onMounted(() => {
             v-if="message.role === 'assistant' && message.metadata"
             :metadata="message.metadata"
             :show-cost="props.showCost"
+            :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
         </div>
       </template>
     </UChatMessages>
 
-    <div v-if="error || continuationError" class="chat-error" role="alert">
-      <div class="chat-error__copy"><UIcon name="i-lucide-circle-alert" /><span>{{ continuationError || error?.message || 'Не удалось получить ответ модели.' }}</span></div>
-      <UButton size="sm" color="neutral" variant="ghost" @click="continuationError = null; clearError()">Закрыть</UButton>
+    <div v-if="visibleErrors.length" class="chat-error" role="alert">
+      <div class="chat-error__copy"><UIcon name="i-lucide-circle-alert" /><span><span v-for="(message, index) in visibleErrors" :key="index" class="chat-error__message">{{ message }}</span></span></div>
+      <UButton size="sm" color="neutral" variant="ghost" @click="dismissError">Закрыть</UButton>
     </div>
 
     <form class="chat-composer" @click="handleComposerClick" @submit="handleSubmit">

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { LanguageModelUsage } from 'ai'
 
 export type RunLogLevel = 'off' | 'basic' | 'detailed' | 'raw'
+export type RunLogStatus = 'completed' | 'failed' | 'aborted' | 'unknown' | 'empty_response' | 'step_limit'
 
 export interface RunLogRequest {
   model?: string
@@ -15,6 +16,8 @@ export interface RunLogResponse {
   rawFinishReason?: string
   id?: string
   modelId?: string
+  headers?: unknown
+  timestamp?: unknown
 }
 
 export interface RunLogEntry {
@@ -23,6 +26,13 @@ export interface RunLogEntry {
   question: string
   answer?: string
   error?: string
+  status?: RunLogStatus
+  sessionId?: string
+  turnId?: string
+  errorDetails?: unknown
+  diagnostics?: Record<string, unknown>
+  /** Values to redact from every string; never written to the log. */
+  sensitiveValues?: readonly string[]
   startedAt: string
   completedAt: string
   durationMs: number
@@ -53,36 +63,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function redactString(value: string): string {
-  return value.replace(
+function redactString(value: string, sensitiveValues: readonly string[]): string {
+  for (const secret of sensitiveValues) {
+    if (secret) value = value.replaceAll(secret, '[REDACTED]')
+  }
+  return value.replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]').replace(
     /([?&](?:api[_-]?key|access[_-]?token|authorization|token)=)[^&\s]+/gi,
     '$1[REDACTED]',
   )
 }
 
-function redactSecrets(value: unknown): unknown {
+function redactSecrets(value: unknown, ancestors = new WeakSet<object>(), sensitiveValues: readonly string[] = []): unknown {
   if (typeof value === 'string') {
-    return redactString(value)
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => redactSecrets(item))
+    // API error bodies are often JSON encoded inside a string.
+    if (/^\s*[\[{]/u.test(value)) {
+      try {
+        const parsed = JSON.parse(value)
+        const redacted = JSON.stringify(redactSecrets(parsed, ancestors, sensitiveValues))
+        return redacted === JSON.stringify(parsed) ? value : redacted
+      } catch { /* Keep non-JSON provider messages as text. */ }
+    }
+    return redactString(value, sensitiveValues)
   }
 
   if (!isRecord(value)) {
-    return value
+    return typeof value === 'bigint' ? value.toString() : value
   }
 
-  const result: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value)) {
-    if (/^(api[_-]?key|authorization|secret|token)$/iu.test(key)) {
-      result[key] = '[REDACTED]'
-    } else {
-      result[key] = redactSecrets(item)
+  if (ancestors.has(value)) return '[Circular]'
+  ancestors.add(value)
+  try {
+    if (value instanceof Date) return value.toISOString()
+    if (Array.isArray(value)) return value.map(item => redactSecrets(item, ancestors, sensitiveValues))
+
+    // Error.message/stack/cause are not enumerable; omit request bodies and credentials.
+    const entries = value instanceof Error
+      ? ['name', 'message', 'code', 'statusCode', 'isRetryable', 'url', 'responseHeaders',
+          'responseBody', 'data', 'cause', 'errors', 'lastError', 'reason', 'stack']
+        .filter(key => key in value)
+        .map(key => [key, value[key]] as const)
+      : Object.entries(value)
+    const result: Record<string, unknown> = {}
+    for (const [key, item] of entries) {
+      result[key] = /^(?:x[-_]?)?api[-_]?key$|^(?:proxy[-_]?)?authorization$|^(?:access[-_]?|refresh[-_]?)?token$|^(?:client[-_]?)?secret$|^password$|^(?:set[-_]?)?cookie$/iu.test(key)
+        ? '[REDACTED]'
+        : redactSecrets(item, ancestors, sensitiveValues)
     }
+    return result
+  } finally {
+    ancestors.delete(value)
   }
-
-  return result
 }
 
 function projectRequest(request: RunLogRequest | undefined): unknown {
@@ -90,11 +120,11 @@ function projectRequest(request: RunLogRequest | undefined): unknown {
     return undefined
   }
 
-  return redactSecrets({
+  return {
     ...(request.model === undefined ? {} : { model: request.model }),
     ...(request.messages === undefined ? {} : { messages: request.messages }),
     ...(request.instructions === undefined ? {} : { instructions: request.instructions }),
-  })
+  }
 }
 
 function projectResponse(response: RunLogResponse | undefined): unknown {
@@ -102,17 +132,19 @@ function projectResponse(response: RunLogResponse | undefined): unknown {
     return undefined
   }
 
-  return redactSecrets({
+  return {
     ...(response.finishReason === undefined ? {} : { finishReason: response.finishReason }),
     ...(response.rawFinishReason === undefined ? {} : { rawFinishReason: response.rawFinishReason }),
     ...(response.id === undefined ? {} : { id: response.id }),
     ...(response.modelId === undefined ? {} : { modelId: response.modelId }),
-  })
+    ...(response.headers === undefined ? {} : { headers: response.headers }),
+    ...(response.timestamp === undefined ? {} : { timestamp: response.timestamp }),
+  }
 }
 
 function projectStep(step: unknown): unknown {
   if (!isRecord(step)) {
-    return redactSecrets(step)
+    return step
   }
 
   const projected = {
@@ -124,32 +156,40 @@ function projectStep(step: unknown): unknown {
     ...(step.finishReason === undefined ? {} : { finishReason: step.finishReason }),
     ...(step.rawFinishReason === undefined ? {} : { rawFinishReason: step.rawFinishReason }),
     ...(step.usage === undefined ? {} : { usage: step.usage }),
+    ...(step.warnings === undefined ? {} : { warnings: step.warnings }),
+    ...(step.response === undefined ? {} : { response: projectResponse(step.response as RunLogResponse) }),
+    ...(step.providerMetadata === undefined ? {} : { providerMetadata: step.providerMetadata }),
   }
 
-  return redactSecrets(projected)
+  return projected
 }
 
 function projectEntry(entry: RunLogEntry): Record<string, unknown> {
   const projected: Record<string, unknown> = {
-    question: redactSecrets(entry.question),
+    question: entry.question,
     startedAt: entry.startedAt,
     completedAt: entry.completedAt,
     durationMs: entry.durationMs,
+    ...(entry.status === undefined ? {} : { status: entry.status }),
+    ...(entry.sessionId === undefined ? {} : { sessionId: entry.sessionId }),
+    ...(entry.turnId === undefined ? {} : { turnId: entry.turnId }),
   }
 
   if (entry.answer !== undefined) {
-    projected.answer = redactSecrets(entry.answer)
+    projected.answer = entry.answer
   }
 
   if (entry.error !== undefined) {
-    projected.error = redactSecrets(entry.error)
+    projected.error = entry.error
   }
 
   if (entry.usage !== undefined) {
-    projected.usage = redactSecrets(entry.usage)
+    projected.usage = entry.usage
   }
 
   if (entry.level === 'detailed' || entry.level === 'raw') {
+    if (entry.errorDetails !== undefined) projected.errorDetails = entry.errorDetails
+    if (entry.diagnostics !== undefined) projected.diagnostics = entry.diagnostics
     const request = projectRequest(entry.request)
     const response = projectResponse(entry.response)
     if (request !== undefined) {
@@ -164,10 +204,10 @@ function projectEntry(entry: RunLogEntry): Record<string, unknown> {
   }
 
   if (entry.level === 'raw' && entry.rawResponse !== undefined) {
-    projected.rawResponse = entry.rawResponse.map(chunk => redactSecrets(chunk))
+    projected.rawResponse = entry.rawResponse
   }
 
-  return projected
+  return redactSecrets(projected, new WeakSet<object>(), entry.sensitiveValues) as Record<string, unknown>
 }
 
 async function readStoredRunLog(filePath: string): Promise<StoredRunLog | null> {

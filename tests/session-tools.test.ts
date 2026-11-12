@@ -51,6 +51,18 @@ describe('session log parser and analysis', () => {
     expect(() => parseSessionLog('{')).toThrow('корректный JSON')
   })
 
+  it('rejects oversized diagnostic strings in uploaded logs', () => {
+    const log = JSON.parse(sessionFile())
+    log.requests[0].diagnostics = { outcome: 'failed', finishReason: 'x'.repeat(1024 * 1024) }
+    expect(() => parseSessionLog(JSON.stringify(log))).toThrow('не соответствует формату')
+  })
+
+  it('reads a request stopped by the step limit from a saved session log', () => {
+    const log = JSON.parse(sessionFile())
+    log.requests[0].status = 'step_limit'
+    expect(parseSessionLog(JSON.stringify(log)).requests[0]?.status).toBe('step_limit')
+  })
+
   it('filters and groups requests by date, model, tool, and session', () => {
     const session = parseSessionLog(sessionFile())
     expect(analyzeSessions([session], 'day').groups).toMatchObject([
@@ -170,6 +182,29 @@ describe('session store and agent tools', () => {
       totals: { sessions: 1, requests: 2, totalTokens: 39 },
       groups: [{ key: 'model-a' }, { key: 'model-b' }],
     })
+  })
+
+  it('exposes failure diagnostics when reading a session and marks truncated error details', async () => {
+    const root = await temporaryDirectory()
+    await mkdir(join(root, 'runs'))
+    const path = 'runs/run-2026-11-09T12:00:00.000Z.json'
+    const log = JSON.parse(sessionFile())
+    Object.assign(log.requests[0], {
+      status: 'failed', error: 'Maximum context length exceeded',
+      errorDetails: { statusCode: 400, responseBody: 'provider details '.repeat(200) },
+      diagnostics: { outcome: 'failed', stepCount: 0 },
+    })
+    await writeFile(join(root, path), JSON.stringify(log))
+    const tools = createSessionTools({ rootDir: root })
+    const context = { toolCallId: 'read-failure', messages: [], context: {} }
+
+    const result = await tools.read_session_file.execute({ path, offset: 0, limit: 1 }, context)
+    expect(result).toMatchObject({ ok: true, data: { entries: [{
+      status: 'failed', error: 'Maximum context length exceeded',
+      errorDetails: expect.stringContaining('"statusCode":400'), errorDetailsTruncated: true,
+      diagnostics: { outcome: 'failed', stepCount: 0 },
+    }] } })
+    if ('ok' in result && result.ok) expect(result.data.entries[0]?.errorDetails?.length).toBeLessThanOrEqual(1000)
   })
 
   it('lets the agent find, read, and analyze a selected log larger than the regular text limit', async () => {

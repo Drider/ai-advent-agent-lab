@@ -12,6 +12,8 @@ interface SessionListResponse {
 }
 
 async function openInitialSession(): Promise<void> {
+  loading.value = true
+  error.value = null
   try {
     const result = await $fetch<SessionListResponse>('/api/sessions')
     const sessionId = selectInitialSession(result)

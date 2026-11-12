@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from 'node:crypto'
+import { randomInt } from 'node:crypto'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createError, defineEventHandler, readRawBody } from 'h3'
 import type { ChatRuntimeConfig } from '../utils/chat-request'
@@ -76,6 +76,7 @@ export default defineEventHandler(async (event) => {
         requestId: request.requestId,
         sourceTurnId: request.sourceTurnId,
         modelId: chatConfig.modelId,
+        message: request.message as ChatUIMessage,
         agentConfig: getAgentConfig(),
       }).turnId
     }
@@ -107,16 +108,6 @@ export default defineEventHandler(async (event) => {
   }
 
   const diceRepository = createDiceRollRepository(db)
-  if (request.kind === 'continue') {
-    messages = [
-      ...messages,
-      {
-        id: randomUUID(),
-        role: 'system' as const,
-        parts: [{ type: 'text', text: 'Continue from the last confirmed tool results. Do not repeat mutating actions.' }],
-      } as ChatUIMessage,
-    ]
-  }
   const runId = session.runLogId
   const abortSignal = event.web?.request?.signal
 
@@ -128,6 +119,7 @@ export default defineEventHandler(async (event) => {
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,
+      sensitiveValues: [chatConfig.apiKey],
       pricing: request.pricing,
       sessionId: request.sessionId,
       turnId,

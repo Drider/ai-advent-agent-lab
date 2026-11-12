@@ -43,15 +43,20 @@ describe('chat continuation', () => {
     turns.recoverRunningTurns()
 
     expect(turns.assessContinuation(sourceTurnId)).toBe('safe')
+    expect((await sessions.getSession(session.id))?.lastTurn?.continuation).toBe('safe')
     const continuation = turns.beginContinuation({
       sessionId: session.id,
       requestId: randomUUID(),
       sourceTurnId,
       modelId: 'mock-model',
+      message: userMessage('Продолжи выполнение предыдущего запроса.'),
       agentConfig: { version: 1 },
     })
     expect(continuation.turnId).not.toBe(sourceTurnId)
     expect(turns.getLastTurn(session.id)?.sourceTurnId).toBe(sourceTurnId)
+    expect((await sessions.getSession(session.id))?.messages.at(-1)).toMatchObject({
+      role: 'user', parts: [{ type: 'text', text: 'Продолжи выполнение предыдущего запроса.' }],
+    })
     db.close()
   })
 
@@ -72,11 +77,13 @@ describe('chat continuation', () => {
     turns.recoverRunningTurns()
 
     expect(turns.assessContinuation(sourceTurnId)).toBe('needs_review')
+    expect((await sessions.getSession(session.id))?.lastTurn?.continuation).toBe('needs_review')
     expect(() => turns.beginContinuation({
       sessionId: session.id,
       requestId: randomUUID(),
       sourceTurnId,
       modelId: 'mock-model',
+      message: userMessage('Продолжи'),
       agentConfig: { version: 1 },
     })).toThrow('unconfirmed tool result')
     db.close()

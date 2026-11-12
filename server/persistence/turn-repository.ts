@@ -4,6 +4,7 @@ import type { UIMessage } from 'ai'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   type ChatMessageStatus,
+  type ChatStopReason,
   type ChatTurnStatus,
   type ChatUIMessage,
   type SessionTurnSummary,
@@ -27,6 +28,7 @@ export class TurnRepositoryError extends Error {
 
 interface TurnRow extends SessionTurnSummary {
   source_turn_id: string | null
+  stop_reason: ChatStopReason | null
 }
 
 interface AssistantMessageRow {
@@ -54,6 +56,7 @@ function toPublicTurn(row: TurnRow): SessionTurnSummary {
     ...(row.source_turn_id === null ? {} : { sourceTurnId: row.source_turn_id }),
     position: row.position,
     status: row.status,
+    ...(row.stop_reason === null ? {} : { stopReason: row.stop_reason }),
     modelId: row.modelId,
     startedAt: row.startedAt,
     ...(row.finishedAt === undefined ? {} : { finishedAt: row.finishedAt }),
@@ -127,6 +130,7 @@ export function createTurnRepository(db: Database.Database) {
       timestamp,
       timestamp,
     )
+    db.prepare('UPDATE sessions SET model_id = ? WHERE id = ?').run(input.modelId, input.sessionId)
   }
 
   function insertMessage(sessionId: string, turnId: string, message: UIMessage, status: ChatMessageStatus): void {
@@ -178,6 +182,7 @@ export function createTurnRepository(db: Database.Database) {
     requestId: string
     sourceTurnId: string
     modelId: string
+    message: ChatUIMessage
     agentConfig: unknown
   }): { turnId: string } {
     return transaction(() => {
@@ -195,6 +200,7 @@ export function createTurnRepository(db: Database.Database) {
         throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${input.sourceTurnId} has an unconfirmed tool result`)
       }
       insertTurn(input)
+      insertMessage(input.sessionId, input.requestId, input.message, 'complete')
       touchSession(input.sessionId, 'running', now())
       return { turnId: input.requestId }
     })
@@ -323,6 +329,7 @@ export function createTurnRepository(db: Database.Database) {
     turnId: string
     message: ChatUIMessage
     status: ChatTurnStatus
+    stopReason?: ChatStopReason
   }): void {
     transaction(() => {
       const turn = getTurnRow(input.turnId)
@@ -337,9 +344,9 @@ export function createTurnRepository(db: Database.Database) {
       const timestamp = now()
       db.prepare(`
         UPDATE turns
-        SET status = ?, finished_at = ?, updated_at = ?
+        SET status = ?, stop_reason = ?, finished_at = ?, updated_at = ?
         WHERE id = ?
-      `).run(input.status, timestamp, timestamp, input.turnId)
+      `).run(input.status, input.stopReason ?? null, timestamp, timestamp, input.turnId)
       db.prepare(`
         UPDATE sessions
         SET status = ?, updated_at = ?, revision = revision + 1
@@ -350,7 +357,7 @@ export function createTurnRepository(db: Database.Database) {
 
   function getLastTurn(sessionId: string): SessionTurnSummary | null {
     const row = db.prepare(`
-      SELECT id, session_id AS sessionId, request_id AS requestId, source_turn_id, position, status,
+      SELECT id, session_id AS sessionId, request_id AS requestId, source_turn_id, position, status, stop_reason,
              model_id AS modelId, started_at AS startedAt, finished_at AS finishedAt, updated_at AS updatedAt
       FROM turns
       WHERE session_id = ?
@@ -367,7 +374,7 @@ export function createTurnRepository(db: Database.Database) {
         return
       }
       const timestamp = now()
-      db.prepare('UPDATE turns SET status = \'stopped\', finished_at = ?, updated_at = ? WHERE id = ?')
+      db.prepare("UPDATE turns SET status = 'stopped', stop_reason = 'user_stopped', finished_at = ?, updated_at = ? WHERE id = ?")
         .run(timestamp, timestamp, turnId)
       db.prepare('UPDATE messages SET status = \'interrupted\', updated_at = ? WHERE turn_id = ? AND role = \'assistant\' AND status = \'partial\'')
         .run(timestamp, turnId)
@@ -375,15 +382,15 @@ export function createTurnRepository(db: Database.Database) {
     })
   }
 
-  function markFailed(turnId: string): void {
+  function markFailed(turnId: string, stopReason: ChatStopReason = 'request_error'): void {
     transaction(() => {
       const turn = getTurnRow(turnId)
       if (turn.status !== 'running') {
         return
       }
       const timestamp = now()
-      db.prepare("UPDATE turns SET status = 'failed', finished_at = ?, updated_at = ? WHERE id = ?")
-        .run(timestamp, timestamp, turnId)
+      db.prepare("UPDATE turns SET status = 'failed', stop_reason = ?, finished_at = ?, updated_at = ? WHERE id = ?")
+        .run(stopReason, timestamp, timestamp, turnId)
       touchSession(turn.session_id, 'failed', timestamp)
     })
   }
@@ -395,7 +402,7 @@ export function createTurnRepository(db: Database.Database) {
         return 0
       }
       const timestamp = now()
-      const updateTurn = db.prepare("UPDATE turns SET status = 'interrupted', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'")
+      const updateTurn = db.prepare("UPDATE turns SET status = 'interrupted', stop_reason = 'server_restart', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'")
       const updateMessage = db.prepare("UPDATE messages SET status = 'interrupted', updated_at = ? WHERE turn_id = ? AND role = 'assistant' AND status = 'partial'")
       const updateSession = db.prepare("UPDATE sessions SET status = 'interrupted', updated_at = ?, revision = revision + 1 WHERE id = ? AND status = 'running'")
       for (const row of rows) {

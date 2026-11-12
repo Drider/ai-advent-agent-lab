@@ -37,23 +37,30 @@ function sessionPage(session: SessionLog, path: string, query: string | undefine
     matchingRequests: matching.length,
     offset,
     hasMore: offset + limit < matching.length,
-    entries: matching.slice(offset, offset + limit).map(({ entry, index }) => ({
-      index,
-      question: excerpt(entry.question),
-      answer: excerpt(entry.answer),
-      error: excerpt(entry.error),
-      startedAt: entry.startedAt,
-      durationMs: entry.durationMs,
-      model: entry.model,
-      tools: entry.tools?.slice(0, MAX_METADATA_VALUES),
-      toolsTruncated: (entry.tools?.length ?? 0) > MAX_METADATA_VALUES,
-      inputTokens: entry.inputTokens,
-      outputTokens: entry.outputTokens,
-      totalTokens: entry.totalTokens,
-      questionTruncated: entry.question.length > MAX_ENTRY_TEXT,
-      answerTruncated: (entry.answer?.length ?? 0) > MAX_ENTRY_TEXT,
-      errorTruncated: (entry.error?.length ?? 0) > MAX_ENTRY_TEXT,
-    })),
+    entries: matching.slice(offset, offset + limit).map(({ entry, index }) => {
+      const errorDetails = entry.errorDetails === undefined ? undefined : JSON.stringify(entry.errorDetails)
+      return {
+        index,
+        question: excerpt(entry.question),
+        answer: excerpt(entry.answer),
+        error: excerpt(entry.error),
+        status: entry.status,
+        errorDetails: excerpt(errorDetails),
+        errorDetailsTruncated: (errorDetails?.length ?? 0) > MAX_ENTRY_TEXT,
+        diagnostics: entry.diagnostics,
+        startedAt: entry.startedAt,
+        durationMs: entry.durationMs,
+        model: entry.model,
+        tools: entry.tools?.slice(0, MAX_METADATA_VALUES),
+        toolsTruncated: (entry.tools?.length ?? 0) > MAX_METADATA_VALUES,
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        totalTokens: entry.totalTokens,
+        questionTruncated: entry.question.length > MAX_ENTRY_TEXT,
+        answerTruncated: (entry.answer?.length ?? 0) > MAX_ENTRY_TEXT,
+        errorTruncated: (entry.error?.length ?? 0) > MAX_ENTRY_TEXT,
+      }
+    }),
   }
 }
 

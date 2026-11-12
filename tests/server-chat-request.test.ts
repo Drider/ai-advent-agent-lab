@@ -33,13 +33,14 @@ describe('parseChatPayload', () => {
     }))).resolves.toEqual({ kind: 'message', sessionId, requestId, message: validMessage })
   })
 
-  it('parses a continuation payload without accepting messages', async () => {
+  it('parses a continuation payload with one user message', async () => {
     await expect(parseChatPayload(JSON.stringify({
       kind: 'continue',
       sessionId,
       requestId,
       sourceTurnId: '33333333-3333-4333-8333-333333333333',
-    }))).resolves.toMatchObject({ kind: 'continue', sessionId, requestId })
+      message: validMessage,
+    }))).resolves.toMatchObject({ kind: 'continue', sessionId, requestId, message: validMessage })
   })
 
   it('rejects a request body larger than 256 KB', async () => {
@@ -53,6 +54,11 @@ describe('parseChatPayload', () => {
       sessionId,
       requestId,
       message: { ...validMessage, parts: [{ type: 'text' }] },
+    }))).rejects.toThrow('messages must contain valid UIMessage entries')
+    await expect(parseChatPayload(JSON.stringify({
+      kind: 'continue', sessionId, requestId,
+      sourceTurnId: '33333333-3333-4333-8333-333333333333',
+      message: { ...validMessage, parts: [{ type: 'text', text: 'Продолжи' }, { type: 'unknown' }] },
     }))).rejects.toThrow('messages must contain valid UIMessage entries')
   })
 

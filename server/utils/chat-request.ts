@@ -36,10 +36,6 @@ export async function parseChatPayload(raw: string): Promise<ChatRequestBody> {
 
   const request = validateChatRequest(parsed)
 
-  if (request.kind === 'continue') {
-    return request
-  }
-
   try {
     const messages = await validateUIMessages<UIMessage>({
       messages: [request.message],

@@ -2,10 +2,13 @@
 defineProps<{
   modelValue: string
   defaultModel: string
+  saveError?: string | null
+  contextLimit: string
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  'update:contextLimit': [value: string]
 }>()
 </script>
 
@@ -48,5 +51,17 @@ const emit = defineEmits<{
     <p class="model-settings__hint">
       По умолчанию: <code>{{ defaultModel }}</code>
     </p>
+    <label class="model-settings__label" for="context-limit">Размер контекстного окна, токенов</label>
+    <UInput
+      id="context-limit"
+      :model-value="contextLimit"
+      type="number"
+      min="1"
+      step="1"
+      placeholder="Укажите лимит выбранной модели"
+      @update:model-value="emit('update:contextLimit', String($event))"
+    />
+    <p class="model-settings__hint">Лимит задаётся для выбранной модели и используется только для расчёта заполнения.</p>
+    <p v-if="saveError" class="model-settings__error" role="alert">{{ saveError }}</p>
   </div>
 </template>

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { RunLogStatus } from '../../utils/run-logger'
 
 const dateTime = z.iso.datetime({ offset: true })
 const usageSchema = z.object({
@@ -10,6 +11,16 @@ const entrySchema = z.object({
   question: z.string(),
   answer: z.string().optional(),
   error: z.string().optional(),
+  status: z.enum(['completed', 'failed', 'aborted', 'unknown', 'empty_response', 'step_limit']).optional(),
+  errorDetails: z.unknown().optional(),
+  diagnostics: z.object({
+    outcome: z.string().max(200).optional(),
+    finishReason: z.string().max(200).optional(),
+    isAborted: z.boolean().optional(),
+    isCancelled: z.boolean().optional(),
+    stepCount: z.number().nonnegative().optional(),
+    phase: z.string().max(200).optional(),
+  }).optional(),
   startedAt: dateTime,
   completedAt: dateTime,
   durationMs: z.number().nonnegative(),
@@ -30,6 +41,9 @@ export interface SessionEntry {
   question: string
   answer?: string
   error?: string
+  status?: RunLogStatus
+  errorDetails?: unknown
+  diagnostics?: Record<string, unknown>
   startedAt: string
   durationMs: number
   model: string | null
@@ -83,6 +97,9 @@ export function parseSessionLog(text: string): SessionLog {
       question: entry.question,
       answer: entry.answer,
       error: entry.error,
+      status: entry.status,
+      errorDetails: entry.errorDetails,
+      diagnostics: entry.diagnostics,
       startedAt: entry.startedAt,
       durationMs: entry.durationMs,
       model: entry.request?.model ?? entry.response?.modelId ?? null,

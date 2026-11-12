@@ -54,7 +54,7 @@ describe('session context', () => {
     db.close()
   })
 
-  it('passes a stored context larger than 256 KiB without trimming it', async () => {
+  it('bounds a long text history while retaining the first request and recent messages', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessions = createSessionRepository(db)
     const session = sessions.createSession()
@@ -67,9 +67,32 @@ describe('session context', () => {
     }
 
     const context = await buildSessionContext(session.id, sessions)
-    expect(context).toHaveLength(30)
+    expect(context.length).toBeLessThan(30)
     expect(context[0]?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
-    expect(context[29]?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
+    expect(context.at(-1)?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
+    expect(JSON.stringify(context).length).toBeLessThan(125_000)
+    expect((await sessions.getSession(session.id))?.messages).toHaveLength(30)
+    db.close()
+  })
+
+  it('omits old tool outputs from a large model context while keeping saved history intact', async () => {
+    const db = openChatDatabase(await createDatabasePath())
+    const sessions = createSessionRepository(db)
+    const session = sessions.createSession()
+    saveMessage(db, session.id, { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: 'Сделай конспект' }] }, 0)
+    const assistant: ChatUIMessage = {
+      id: randomUUID(), role: 'assistant',
+      parts: [
+        { type: 'tool-read_pdf', toolCallId: 'read-1', state: 'output-available', input: { path: 'book.pdf', page: 1 }, output: { ok: true, data: { text: 'x'.repeat(180_000) } } } as never,
+        { type: 'text', text: 'Глава 1: краткое содержание.' },
+      ],
+    }
+    saveMessage(db, session.id, assistant, 1)
+    saveMessage(db, session.id, { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: 'Продолжай' }] }, 2)
+
+    const context = await buildSessionContext(session.id, sessions)
+    expect(context[1]?.parts).toEqual([{ type: 'text', text: 'Глава 1: краткое содержание.' }])
+    expect((await sessions.getSession(session.id))?.messages[1]?.parts).toEqual(assistant.parts)
     db.close()
   })
 

@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { validateUIMessages } from 'ai'
+import { classifyAgentStopReason } from '../utils/agent-stop-reason'
+import { createTurnRepository } from './turn-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
+  validateModelId,
   type ChatMessageStatus,
+  type ChatStopReason,
   type ChatSessionStatus,
   type ChatUIMessage,
   type SessionDetail,
@@ -16,7 +22,7 @@ const MAX_PAGE_SIZE = 100
 
 export class ChatStorageError extends Error {
   constructor(
-    public readonly code: 'INVALID_CURSOR' | 'SESSION_NOT_FOUND' | 'INVALID_STORED_MESSAGE' | 'UNSUPPORTED_STORAGE_VERSION',
+    public readonly code: 'INVALID_CURSOR' | 'SESSION_NOT_FOUND' | 'SESSION_RUNNING' | 'INVALID_STORED_MESSAGE' | 'UNSUPPORTED_STORAGE_VERSION',
     message: string,
     options?: { cause?: unknown },
   ) {
@@ -34,6 +40,7 @@ interface SessionRow {
   last_opened_at: string | null
   status: ChatSessionStatus
   revision: number
+  model_id: string | null
 }
 
 interface MessageRow {
@@ -52,6 +59,7 @@ interface TurnRow {
   source_turn_id: string | null
   position: number
   status: SessionTurnSummary['status']
+  stop_reason: ChatStopReason | null
   model_id: string
   started_at: string
   finished_at: string | null
@@ -128,10 +136,29 @@ function toTurnSummary(row: TurnRow): SessionTurnSummary {
     ...(row.source_turn_id === null ? {} : { sourceTurnId: row.source_turn_id }),
     position: row.position,
     status: row.status,
+    ...(row.stop_reason === null ? {} : { stopReason: row.stop_reason }),
     modelId: row.model_id,
     startedAt: row.started_at,
     ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
     updatedAt: row.updated_at,
+  }
+}
+
+async function legacyStopReason(logDirectory: string, runLogId: string, turn: TurnRow): Promise<ChatStopReason | undefined> {
+  if (turn.stop_reason !== null && turn.stop_reason !== 'agent_error') return undefined
+  if (!['failed', 'stopped', 'interrupted'].includes(turn.status)) return undefined
+  if (turn.status === 'stopped') return 'user_stopped'
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(runLogId)) return undefined
+
+  try {
+    const path = join(logDirectory, `run-${runLogId}.json`)
+    const log = JSON.parse(await readFile(path, 'utf8')) as { requests?: Array<{ turnId?: string; status?: string; errorDetails?: unknown; error?: string }> }
+    const request = log.requests?.find(entry => entry.turnId === turn.id)
+    return request?.status === 'aborted' || request?.status === 'failed'
+      ? classifyAgentStopReason(request.errorDetails ?? request.error)
+      : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -265,17 +292,35 @@ export function createSessionRepository(db: Database.Database) {
     }
 
     const turn = db.prepare(`
-      SELECT id, session_id, request_id, source_turn_id, position, status, model_id, started_at, finished_at, updated_at
+      SELECT id, session_id, request_id, source_turn_id, position, status, stop_reason, model_id, started_at, finished_at, updated_at
       FROM turns
       WHERE session_id = ?
       ORDER BY position DESC
       LIMIT 1
     `).get(id) as TurnRow | undefined
 
+    const lastTurn = turn === undefined ? null : toTurnSummary(turn)
+    if (lastTurn && turn && (!lastTurn.stopReason || lastTurn.stopReason === 'agent_error')) {
+      const diagnosticReason = await legacyStopReason(join(dirname(db.name), 'runs'), row.run_log_id, turn)
+      if (diagnosticReason && (diagnosticReason !== 'agent_error' || !lastTurn.stopReason)) {
+        lastTurn.stopReason = diagnosticReason
+      }
+    }
+    if (lastTurn) lastTurn.continuation = createTurnRepository(db).assessContinuation(lastTurn.id)
+
     return {
       ...toSummary(row, getTitle(db, row.id, row.title)),
       messages,
-      lastTurn: turn === undefined ? null : toTurnSummary(turn),
+      lastTurn,
+      modelId: row.model_id,
+    }
+  }
+
+  function setModelId(id: string, modelId: string): void {
+    const result = db.prepare('UPDATE sessions SET model_id = ? WHERE id = ?')
+      .run(validateModelId(modelId), id)
+    if (result.changes !== 1) {
+      throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
     }
   }
 
@@ -286,5 +331,28 @@ export function createSessionRepository(db: Database.Database) {
     }
   }
 
-  return { createSession, listSessions, getSession, activateSession }
+  function deleteSession(id: string): void {
+    db.transaction(() => {
+      const session = findSession.get(id) as SessionRow | undefined
+      if (!session) {
+        throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
+      }
+      if (session.status === 'running' || db.prepare("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running'").get(id)) {
+        throw new ChatStorageError('SESSION_RUNNING', `session ${id} is running`)
+      }
+
+      db.prepare(`
+        DELETE FROM dice_rolls
+        WHERE tool_call_id IN (
+          SELECT tool_executions.tool_call_id
+          FROM tool_executions
+          JOIN turns ON turns.id = tool_executions.turn_id
+          WHERE turns.session_id = ?
+        )
+      `).run(id)
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+    }).immediate()
+  }
+
+  return { createSession, listSessions, getSession, activateSession, setModelId, deleteSession }
 }

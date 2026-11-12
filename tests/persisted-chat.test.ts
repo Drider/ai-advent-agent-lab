@@ -82,6 +82,15 @@ describe('persisted chat stream', () => {
     expect(detail?.messages.at(-1)?.metadata?.costRub?.input).toBeCloseTo(0.0001)
     expect(detail?.messages.at(-1)?.metadata?.costRub?.output).toBeCloseTo(0.0002)
     expect(detail?.messages.at(-1)?.metadata?.costRub?.total).toBeCloseTo(0.0003)
+    expect(detail?.messages.at(-1)?.metadata?.usage).toMatchObject({
+      inputTokenDetails: { noCacheTokens: 10 },
+      outputTokenDetails: { textTokens: 5 },
+    })
+    expect(detail?.messages.at(-1)?.metadata?.steps).toEqual([{ usage: {
+      inputTokens: 10, outputTokens: 5, totalTokens: 15,
+      inputTokenDetails: { noCacheTokens: 10 },
+      outputTokenDetails: { textTokens: 5 },
+    } }])
     expect(detail?.lastTurn?.status).toBe('completed')
     reopenedDb.close()
   })

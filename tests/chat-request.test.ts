@@ -47,12 +47,14 @@ describe('validateChatRequest', () => {
     })
   })
 
-  it('accepts a continuation without allowing a replacement history', () => {
-    expect(validateChatRequest({ kind: 'continue', sessionId, requestId, sourceTurnId })).toEqual({
+  it('accepts a continuation message without allowing a replacement history', () => {
+    const message = userMessage('Продолжи выполнение предыдущего запроса.')
+    expect(validateChatRequest({ kind: 'continue', sessionId, requestId, sourceTurnId, message })).toEqual({
       kind: 'continue',
       sessionId,
       requestId,
       sourceTurnId,
+      message,
     })
   })
 
@@ -110,6 +112,10 @@ describe('validateChatRequest', () => {
       sessionId,
       requestId,
       sourceTurnId: 'not-a-uuid',
+      message: userMessage('Продолжи'),
     })).toThrow('sourceTurnId must be a UUID')
+    expect(() => validateChatRequest({
+      kind: 'continue', sessionId, requestId, sourceTurnId,
+    })).toThrow('messages must contain valid UIMessage entries')
   })
 })

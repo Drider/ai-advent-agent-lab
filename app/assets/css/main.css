@@ -29,7 +29,8 @@ body {
 
 .chat-app-shell {
   display: flex;
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   background: #fff;
 }
@@ -76,7 +77,7 @@ body {
   display: flex;
   width: 20rem;
   flex: 0 0 20rem;
-  min-height: 100dvh;
+  min-height: 0;
   flex-direction: column;
   gap: 0.9rem;
   overflow-y: auto;
@@ -123,9 +124,17 @@ body {
   gap: 0.25rem;
 }
 
+.session-list__row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.2rem;
+}
+
 .session-list__item {
   display: grid;
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   gap: 0.35rem;
   border: 1px solid transparent;
   border-radius: 0.7rem;
@@ -150,6 +159,18 @@ body {
 .session-list__item:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.session-list__delete {
+  flex: 0 0 auto;
+}
+
+.session-sidebar__error {
+  margin: 0;
+  padding: 0 0.5rem;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .session-list__item-copy {
@@ -287,6 +308,10 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.model-settings .model-settings__error {
+  color: #b91c1c;
+}
+
 .model-settings code {
   color: #475569;
   font-size: 0.75rem;
@@ -322,11 +347,27 @@ textarea {
   padding: 0.5rem 0;
 }
 
-.chat-token-total {
-  margin: 0.25rem 0 0;
-  color: #64748b;
+.chat-context-usage {
+  color: #475569;
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+.chat-context-usage p {
+  margin: 0.2rem 0 0;
+}
+
+.chat-context-usage__hint {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.chat-context-usage progress {
+  display: block;
+  width: min(100%, 23rem);
+  height: 0.35rem;
+  margin-top: 0.3rem;
+  accent-color: #2563eb;
 }
 
 .chat-header h1 {
@@ -468,6 +509,14 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.chat-error__message {
+  display: block;
+}
+
+.chat-error__message + .chat-error__message {
+  margin-top: 0.35rem;
+}
+
 .chat-error__actions {
   display: flex;
   flex-shrink: 0;
@@ -543,13 +592,13 @@ textarea {
 
 @media (max-width: 720px) {
   .chat-app-shell {
-    display: block;
-    overflow: visible;
+    flex-direction: column;
   }
 
   .session-sidebar {
     width: 100%;
-    min-height: auto;
+    flex: 0 1 18rem;
+    min-height: 0;
     max-height: 18rem;
     border-right: 0;
     border-bottom: 1px solid #e2e8f0;
@@ -566,6 +615,9 @@ textarea {
 
   .chat-workspace {
     width: 100%;
+    height: auto;
+    min-height: 0;
+    flex: 1 1 auto;
     padding-right: 0.75rem;
     padding-left: 0.75rem;
   }

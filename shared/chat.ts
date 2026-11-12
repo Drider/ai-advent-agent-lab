@@ -1,8 +1,13 @@
 import type { LanguageModelUsage, UIMessage } from 'ai'
 
+export type ChatTokenUsage = Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
+  & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>
+
 export interface ChatMessageMetadata {
   durationMs: number
-  usage: Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
+  usage: ChatTokenUsage
+  steps?: Array<{ usage: ChatTokenUsage }>
+  stopReason?: 'step_limit'
   costRub?: ChatCostRub
 }
 
@@ -54,10 +59,31 @@ export function calculateChatCost(
 
 export type ChatUIMessage = UIMessage<ChatMessageMetadata>
 
-export function dialogueTokenTotal(messages: ChatUIMessage[]): number {
-  return messages.reduce((total, message) => {
-    return total + (message.role === 'assistant' ? message.metadata?.usage.totalTokens ?? 0 : 0)
-  }, 0)
+export function parseContextLimit(value: string): number | undefined {
+  if (!/^[1-9]\d*$/u.test(value)) return undefined
+  const limit = Number(value)
+  return Number.isSafeInteger(limit) ? limit : undefined
+}
+
+// Each agent step is a separate model call. The context limit applies to one
+// call's input plus output, not to input accumulated across multiple calls.
+export function latestContextUsage(messages: ChatUIMessage[], limit?: number) {
+  const reply = [...messages].reverse().find(message => message.role === 'assistant' && message.metadata)
+  const stepUsage = reply?.metadata?.steps?.at(-1)?.usage
+  const inputTokens = stepUsage?.inputTokens
+  if (inputTokens === undefined) return undefined
+  const outputTokens = stepUsage?.outputTokens
+  if (outputTokens === undefined) return { kind: 'input-only' as const, inputTokens }
+  const occupiedTokens = inputTokens + outputTokens
+  const measuredCall = { inputTokens, outputTokens, occupiedTokens }
+  if (limit === undefined || !Number.isSafeInteger(limit) || limit <= 0) return { kind: 'measured' as const, ...measuredCall }
+  return {
+    kind: 'limited' as const,
+    ...measuredCall,
+    limit,
+    percent: Math.round(occupiedTokens / limit * 1000) / 10,
+    remaining: Math.max(0, limit - occupiedTokens),
+  }
 }
 
 export function dialogueCostTotals(messages: ChatUIMessage[]): Map<string, number> {
@@ -76,6 +102,30 @@ export const CHAT_MESSAGE_STORAGE_VERSION = 1
 export type ChatSessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'needs_review'
 export type ChatTurnStatus = Exclude<ChatSessionStatus, 'idle'>
 export type ChatMessageStatus = 'complete' | 'partial' | 'interrupted'
+export type ChatStopReason =
+  | 'timeout' | 'step_limit' | 'context_limit' | 'user_stopped' | 'server_restart' | 'request_error'
+  | 'rate_limit' | 'provider_unavailable' | 'provider_auth' | 'invalid_model' | 'invalid_prompt' | 'connection_error' | 'agent_error'
+  | 'provider_spending_limit'
+
+export function stopReasonMessage(reason: ChatStopReason | undefined): string {
+  switch (reason) {
+    case 'timeout': return 'Запрос остановлен по лимиту времени. Текущий лимит — 10 минут; можно продолжить с сохранённой истории.'
+    case 'step_limit': return 'Операция завершена не полностью: агент достиг лимита шагов. Нажмите «Продолжить», чтобы возобновить её с сохранённой истории.'
+    case 'context_limit': return 'Контекст модели переполнен. Повторите запрос; если ошибка сохранится, начните новый диалог с кратким описанием задачи.'
+    case 'user_stopped': return 'Вы остановили генерацию. Можно продолжить с сохранённой истории.'
+    case 'server_restart': return 'Работа прервалась при перезапуске сервера. Можно продолжить с сохранённой истории.'
+    case 'request_error': return 'Не удалось подготовить запрос. Продолжение может снова завершиться ошибкой.'
+    case 'rate_limit': return 'Провайдер ограничил частоту запросов. Подождите и попробуйте продолжить.'
+    case 'provider_spending_limit': return 'В polza.ai достигнут лимит расходов, установленный в дашборде. Проверьте лимит; после его изменения можно продолжить диалог.'
+    case 'provider_unavailable': return 'Сервис модели временно недоступен. Попробуйте продолжить позже.'
+    case 'provider_auth': return 'Провайдер отклонил доступ. Проверьте API-ключ: продолжение без исправления снова завершится ошибкой.'
+    case 'invalid_model': return 'Провайдер отклонил модель или параметры запроса. Проверьте настройки модели перед продолжением.'
+    case 'invalid_prompt': return 'Приложение неверно сформировало запрос. Обновите страницу и попробуйте продолжить; если ошибка повторится, требуется исправление.'
+    case 'connection_error': return 'Соединение с моделью оборвалось. Можно попробовать продолжить.'
+    case 'agent_error': return 'Агент завершился с ошибкой. Попробуйте продолжить; если ошибка повторится, проверьте диагностический лог.'
+    default: return 'Причина остановки не сохранена. Попробуйте продолжить; если ошибка повторится, проверьте диагностический лог.'
+  }
+}
 
 export interface SessionSummary {
   id: string
@@ -95,6 +145,8 @@ export interface SessionTurnSummary {
   sourceTurnId?: string
   position: number
   status: ChatTurnStatus
+  stopReason?: ChatStopReason
+  continuation?: 'safe' | 'needs_review' | 'not_available'
   modelId: string
   startedAt: string
   finishedAt?: string
@@ -104,6 +156,7 @@ export interface SessionTurnSummary {
 export interface SessionDetail extends SessionSummary {
   messages: ChatUIMessage[]
   lastTurn: SessionTurnSummary | null
+  modelId: string | null
 }
 
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
@@ -126,6 +179,7 @@ export type ChatRequestBody =
       sessionId: string
       requestId: string
       sourceTurnId: string
+      message: UIMessage
       model?: string
       pricing?: ChatPricing
     }
@@ -219,6 +273,20 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
   const model = input.model === undefined ? undefined : validateModelId(input.model)
   const pricing = validatePricing(input.pricing)
 
+  if (!isUIMessageLike(input.message)) {
+    throw new Error('messages must contain valid UIMessage entries')
+  }
+  if (input.message.role !== 'user') {
+    throw new Error('message must be a user UIMessage')
+  }
+  const text = getMessageText(input.message)
+  if (!text.trim()) {
+    throw new Error('the message must contain text')
+  }
+  if (text.length > MAX_LAST_USER_MESSAGE_LENGTH) {
+    throw new Error('the message must be no longer than 10000 characters')
+  }
+
   if (input.kind === 'continue') {
     if (typeof input.sourceTurnId !== 'string' || !UUID_PATTERN.test(input.sourceTurnId)) {
       throw new Error('sourceTurnId must be a UUID')
@@ -229,25 +297,10 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
       sessionId: input.sessionId,
       requestId: input.requestId,
       sourceTurnId: input.sourceTurnId,
+      message: input.message,
       ...(model === undefined ? {} : { model }),
       ...(pricing === undefined ? {} : { pricing }),
     }
-  }
-
-  if (!isUIMessageLike(input.message)) {
-    throw new Error('messages must contain valid UIMessage entries')
-  }
-  if (input.message.role !== 'user') {
-    throw new Error('message must be a user UIMessage')
-  }
-
-  const text = getMessageText(input.message)
-  if (!text.trim()) {
-    throw new Error('the message must contain text')
-  }
-
-  if (text.length > MAX_LAST_USER_MESSAGE_LENGTH) {
-    throw new Error('the message must be no longer than 10000 characters')
   }
 
   return {

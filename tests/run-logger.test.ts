@@ -110,6 +110,56 @@ describe('appendRunLogEntry', () => {
     expect(log.requests[0]?.rawResponse).toEqual(createEntry('raw').rawResponse)
   })
 
+  it('preserves error metadata and causes without leaking credentials or failing on cycles', async () => {
+    const directory = await createTemporaryDirectory()
+    const cause = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' })
+    const error = Object.assign(new Error('Provider rejected request', { cause }), {
+      statusCode: 400,
+      isRetryable: false,
+      url: 'https://provider.example/v1?access_token=url-secret',
+      responseHeaders: { 'x-request-id': 'req-123', 'set-cookie': 'session=cookie-secret' },
+      responseBody: JSON.stringify({ error: { code: 'context_length_exceeded' }, api_key: 'body-secret' }),
+      requestBodyValues: { authorization: 'request-secret' },
+    })
+    Object.assign(cause, { cause: error })
+
+    await appendRunLogEntry({
+      ...createEntry('raw'),
+      status: 'failed',
+      error: error.message,
+      errorDetails: error,
+      diagnostics: { outcome: 'failed' },
+      rawResponse: [{ type: 'error', error }],
+    } as RunLogEntry, directory)
+
+    const log = await readRunLog(directory)
+    expect(log.requests[0]).toMatchObject({
+      status: 'failed',
+      error: 'Provider rejected request',
+      errorDetails: {
+        name: 'Error', message: 'Provider rejected request', stack: expect.any(String),
+        statusCode: 400, isRetryable: false,
+        responseHeaders: { 'x-request-id': 'req-123' },
+        cause: { message: 'socket closed', code: 'ECONNRESET', cause: '[Circular]' },
+      },
+      diagnostics: { outcome: 'failed' },
+      rawResponse: [{ error: { message: 'Provider rejected request' } }],
+    })
+    const serialized = JSON.stringify(log)
+    for (const secret of ['url-secret', 'cookie-secret', 'body-secret', 'request-secret']) {
+      expect(serialized).not.toContain(secret)
+    }
+    expect(serialized).not.toContain('requestBodyValues')
+  })
+
+  it('preserves the original formatting of JSON text without secrets', async () => {
+    const directory = await createTemporaryDirectory()
+    const answer = '{\n  "result": 4\n}'
+    await appendRunLogEntry({ ...createEntry('basic'), answer }, directory)
+
+    expect((await readRunLog(directory)).requests[0]?.answer).toBe(answer)
+  })
+
   it('does not create a file when logging is disabled', async () => {
     const directory = await createTemporaryDirectory()
 

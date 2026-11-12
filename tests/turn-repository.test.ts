@@ -123,6 +123,23 @@ describe('turn repository', () => {
     db.close()
   })
 
+  it('keeps the stop reason after reopening the database', async () => {
+    const filePath = await createDatabasePath()
+    const db = openChatDatabase(filePath)
+    const session = createSessionRepository(db).createSession()
+    const turns = createTurnRepository(db)
+    const turnId = randomUUID()
+    turns.beginUserTurn({ sessionId: session.id, requestId: turnId, modelId: 'mock-model', message: userMessage('Дальше'), agentConfig: {} })
+    turns.finishTurn({ turnId, message: assistantMessage(''), status: 'interrupted', stopReason: 'timeout' })
+    db.close()
+
+    const reopened = openChatDatabase(filePath)
+    expect((await createSessionRepository(reopened).getSession(session.id))?.lastTurn).toMatchObject({
+      status: 'interrupted', stopReason: 'timeout', continuation: 'safe',
+    })
+    reopened.close()
+  })
+
   it('recovers only running turns after reopening and preserves stopped turns', async () => {
     const filePath = await createDatabasePath()
     const firstDb = openChatDatabase(filePath)
@@ -153,7 +170,9 @@ describe('turn repository', () => {
     const reopenedSessions = createSessionRepository(secondDb)
     expect(reopenedTurns.recoverRunningTurns()).toBe(1)
     expect((await reopenedSessions.getSession(runningSession.id))?.lastTurn?.status).toBe('interrupted')
+    expect((await reopenedSessions.getSession(runningSession.id))?.lastTurn?.stopReason).toBe('server_restart')
     expect((await reopenedSessions.getSession(stoppedSession.id))?.lastTurn?.status).toBe('stopped')
+    expect((await reopenedSessions.getSession(stoppedSession.id))?.lastTurn?.stopReason).toBe('user_stopped')
     secondDb.close()
   })
 })

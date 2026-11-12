@@ -1,43 +1,45 @@
 import { describe, expect, it } from 'vitest'
 import * as chat from '../shared/chat'
 
-describe('dialogueTokenTotal', () => {
-  it('sums reported usage across assistant replies, including repeated history', () => {
-    expect(chat).toHaveProperty('dialogueTokenTotal')
+describe('latestContextUsage', () => {
+  it('compares input plus output of one model call with the window', () => {
     const messages: chat.ChatUIMessage[] = [
-      { id: 'user', role: 'user', parts: [], metadata: {
-        durationMs: 0,
-        usage: { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
-      } },
-      { id: 'reply-1', role: 'assistant', parts: [], metadata: {
-        durationMs: 10,
-        usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
-      } },
-      { id: 'reply-2', role: 'assistant', parts: [], metadata: {
-        durationMs: 10,
-        usage: { inputTokens: 250, outputTokens: 75, totalTokens: 325 },
-      } },
+      { id: 'first', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, steps: [{ usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } }] } },
+      { id: 'second', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: 450, outputTokens: 30, totalTokens: 480 }, steps: [
+        { usage: { inputTokens: 200, outputTokens: 10, totalTokens: 210 } },
+        { usage: { inputTokens: 250, outputTokens: 20, totalTokens: 270 } },
+      ] } },
     ]
-
-    expect(chat.dialogueTokenTotal(messages)).toBe(475)
-    expect(chat.dialogueTokenTotal(messages.slice(0, 2))).toBe(150)
+    expect(chat.latestContextUsage(messages, 1000)).toEqual({
+      kind: 'limited',
+      inputTokens: 250,
+      outputTokens: 20,
+      occupiedTokens: 270,
+      limit: 1000,
+      percent: 27,
+      remaining: 730,
+    })
   })
 
-  it('skips replies without token statistics and starts each dialogue at zero', () => {
-    expect(chat).toHaveProperty('dialogueTokenTotal')
-    const messages: chat.ChatUIMessage[] = [
-      { id: 'partial', role: 'assistant', parts: [{ type: 'text', text: 'Ответ…' }] },
-      { id: 'unknown-usage', role: 'assistant', parts: [], metadata: {
-        durationMs: 10,
-        usage: { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined },
-      } },
-      { id: 'reply', role: 'assistant', parts: [], metadata: {
-        durationMs: 10,
-        usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
-      } },
-    ]
+  it('shows unknown when the latest call has no usage or old metadata has no steps', () => {
+    const old: chat.ChatUIMessage = { id: 'old', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } } }
+    expect(chat.latestContextUsage([old], 1000)).toBeUndefined()
+    const missing: chat.ChatUIMessage = { id: 'new', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined }, steps: [{ usage: { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined } }] } }
+    expect(chat.latestContextUsage([old, missing], 1000)).toBeUndefined()
+  })
 
-    expect(chat.dialogueTokenTotal(messages)).toBe(10)
-    expect(chat.dialogueTokenTotal([])).toBe(0)
+  it('uses input plus output even when provider total differs, and clamps remaining at zero', () => {
+    const message: chat.ChatUIMessage = { id: 'reply', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: 120, outputTokens: 5, totalTokens: 130 }, steps: [{ usage: { inputTokens: 120, outputTokens: 5, totalTokens: 130 } }] } }
+    expect(chat.latestContextUsage([message])).toEqual({ kind: 'measured', inputTokens: 120, outputTokens: 5, occupiedTokens: 125 })
+    expect(chat.latestContextUsage([message], 100)).toEqual({ kind: 'limited', inputTokens: 120, outputTokens: 5, occupiedTokens: 125, limit: 100, percent: 125, remaining: 0 })
+    expect(chat.parseContextLimit('128000')).toBe(128000)
+    expect(chat.parseContextLimit('0')).toBeUndefined()
+    expect(chat.parseContextLimit('1.5')).toBeUndefined()
+    expect(chat.parseContextLimit('abc')).toBeUndefined()
+  })
+
+  it('does not calculate a window percentage when output usage is unknown', () => {
+    const message: chat.ChatUIMessage = { id: 'reply', role: 'assistant', parts: [], metadata: { durationMs: 1, usage: { inputTokens: 120, outputTokens: undefined, totalTokens: undefined }, steps: [{ usage: { inputTokens: 120, outputTokens: undefined, totalTokens: undefined } }] } }
+    expect(chat.latestContextUsage([message], 1000)).toEqual({ kind: 'input-only', inputTokens: 120 })
   })
 })
