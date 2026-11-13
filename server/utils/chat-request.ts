@@ -1,6 +1,7 @@
 import { validateUIMessages, type UIMessage } from 'ai'
 import {
   DEFAULT_CHAT_MODEL,
+  DEFAULT_COMPACTION_SETTINGS,
   validateChatRequest,
   validateModelId,
   type ChatRequestBody,
@@ -44,6 +45,7 @@ export async function parseChatPayload(raw: string): Promise<ChatRequestBody> {
     return {
       ...request,
       message: messages[0]!,
+      compaction: request.compaction ?? DEFAULT_COMPACTION_SETTINGS,
     }
   } catch {
     throw new Error('messages must contain valid UIMessage entries')

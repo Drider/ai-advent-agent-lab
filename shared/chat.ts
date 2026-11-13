@@ -163,6 +163,20 @@ export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
 export const MAX_LAST_USER_MESSAGE_LENGTH = 10_000
 export const MAX_MODEL_ID_LENGTH = 200
 
+export interface ChatCompactionSettings {
+  enabled: boolean
+  messageThreshold: number
+  contextWindowTokens?: number
+}
+
+export const DEFAULT_COMPACTION_SETTINGS: ChatCompactionSettings = {
+  enabled: true,
+  messageThreshold: 20,
+}
+
+const MIN_COMPACTION_MESSAGE_THRESHOLD = 12
+const MAX_COMPACTION_MESSAGE_THRESHOLD = 10_000
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 export type ChatRequestBody =
@@ -172,6 +186,7 @@ export type ChatRequestBody =
       requestId: string
       model?: string
       pricing?: ChatPricing
+      compaction?: ChatCompactionSettings
       message: UIMessage
     }
   | {
@@ -182,7 +197,33 @@ export type ChatRequestBody =
       message: UIMessage
       model?: string
       pricing?: ChatPricing
+      compaction?: ChatCompactionSettings
     }
+
+export function validateCompactionSettings(input: unknown): ChatCompactionSettings {
+  if (input === undefined) {
+    return { ...DEFAULT_COMPACTION_SETTINGS }
+  }
+
+  if (!isRecord(input)
+    || typeof input.enabled !== 'boolean'
+    || typeof input.messageThreshold !== 'number'
+    || !Number.isSafeInteger(input.messageThreshold)
+    || input.messageThreshold < MIN_COMPACTION_MESSAGE_THRESHOLD
+    || input.messageThreshold > MAX_COMPACTION_MESSAGE_THRESHOLD
+    || (input.contextWindowTokens !== undefined
+      && (typeof input.contextWindowTokens !== 'number'
+        || !Number.isSafeInteger(input.contextWindowTokens)
+        || input.contextWindowTokens <= 0))) {
+    throw new Error('compaction must contain a boolean enabled flag, messageThreshold from 12 to 10000, and an optional positive contextWindowTokens')
+  }
+
+  return {
+    enabled: input.enabled,
+    messageThreshold: input.messageThreshold,
+    ...(input.contextWindowTokens === undefined ? {} : { contextWindowTokens: input.contextWindowTokens }),
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -272,6 +313,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
 
   const model = input.model === undefined ? undefined : validateModelId(input.model)
   const pricing = validatePricing(input.pricing)
+  const compaction = input.compaction === undefined ? undefined : validateCompactionSettings(input.compaction)
 
   if (!isUIMessageLike(input.message)) {
     throw new Error('messages must contain valid UIMessage entries')
@@ -300,6 +342,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
       message: input.message,
       ...(model === undefined ? {} : { model }),
       ...(pricing === undefined ? {} : { pricing }),
+      ...(compaction === undefined ? {} : { compaction }),
     }
   }
 
@@ -310,5 +353,6 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
     message: input.message,
     ...(model === undefined ? {} : { model }),
     ...(pricing === undefined ? {} : { pricing }),
+    ...(compaction === undefined ? {} : { compaction }),
   }
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_COMPACTION_SETTINGS } from '../shared/chat'
 import {
   parseChatPayload,
   resolveChatConfig,
@@ -30,7 +31,7 @@ describe('parseChatPayload', () => {
       sessionId,
       requestId,
       message: validMessage,
-    }))).resolves.toEqual({ kind: 'message', sessionId, requestId, message: validMessage })
+    }))).resolves.toEqual({ kind: 'message', sessionId, requestId, message: validMessage, compaction: DEFAULT_COMPACTION_SETTINGS })
   })
 
   it('parses a continuation payload with one user message', async () => {
@@ -40,7 +41,14 @@ describe('parseChatPayload', () => {
       requestId,
       sourceTurnId: '33333333-3333-4333-8333-333333333333',
       message: validMessage,
-    }))).resolves.toMatchObject({ kind: 'continue', sessionId, requestId, message: validMessage })
+    }))).resolves.toMatchObject({ kind: 'continue', sessionId, requestId, message: validMessage, compaction: DEFAULT_COMPACTION_SETTINGS })
+  })
+
+  it('normalizes compaction settings in the server boundary', async () => {
+    const compaction = { enabled: false, messageThreshold: 12, contextWindowTokens: 128000 }
+    await expect(parseChatPayload(JSON.stringify({
+      kind: 'message', sessionId, requestId, message: validMessage, compaction,
+    }))).resolves.toMatchObject({ compaction })
   })
 
   it('rejects a request body larger than 256 KB', async () => {

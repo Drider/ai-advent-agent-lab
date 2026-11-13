@@ -2,7 +2,9 @@ import type { UIMessage } from 'ai'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CHAT_MODEL,
+  DEFAULT_COMPACTION_SETTINGS,
   validateChatRequest,
+  validateCompactionSettings,
   validateModelId,
 } from '../shared/chat'
 
@@ -45,6 +47,26 @@ describe('validateChatRequest', () => {
       message: userMessage('Брось кубик'),
       model: 'deepseek/deepseek-v4.1-flash',
     })
+  })
+
+  it('accepts compaction settings for a new message and continuation', () => {
+    const compaction = { enabled: false, messageThreshold: 12, contextWindowTokens: 128000 }
+    expect(validateChatRequest({
+      kind: 'message', sessionId, requestId, message: userMessage('Привет'), compaction,
+    })).toMatchObject({ compaction })
+    expect(validateChatRequest({
+      kind: 'continue', sessionId, requestId, sourceTurnId, message: userMessage('Продолжи'), compaction,
+    })).toMatchObject({ compaction })
+  })
+
+  it('defaults omitted compaction settings', () => {
+    expect(validateCompactionSettings(undefined)).toEqual(DEFAULT_COMPACTION_SETTINGS)
+  })
+
+  it('rejects invalid compaction settings', () => {
+    expect(() => validateCompactionSettings({ enabled: true, messageThreshold: 11 })).toThrow()
+    expect(() => validateCompactionSettings({ enabled: true, messageThreshold: 20, contextWindowTokens: 1.5 })).toThrow()
+    expect(() => validateCompactionSettings({ enabled: true, messageThreshold: 10001 })).toThrow()
   })
 
   it('accepts a continuation message without allowing a replacement history', () => {
