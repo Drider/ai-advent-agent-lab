@@ -10,6 +10,7 @@ import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
 import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-repository'
 import { prepareSessionContext } from '../context-compaction/prepare'
+import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import type { ChatUIMessage } from '../../shared/chat'
 
 function getSafeRequestError(error: unknown): string {
@@ -118,7 +119,7 @@ export default defineEventHandler(async (event) => {
       abortSignal: event.web?.request?.signal,
     })
   } catch (error) {
-    turns.markFailed(turnId)
+    turns.markFailed(turnId, classifyAgentStopReason(error))
     throw error
   }
 

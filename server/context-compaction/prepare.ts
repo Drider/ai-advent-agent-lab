@@ -4,6 +4,7 @@ import { calculateChatCost, type ChatCompactionSettings, type ChatPricing, type 
 import { createCompactionRepository } from './repository'
 import { decideCompaction, type ContextDecision } from './policy'
 import { getCompactionErrorUsage, summarizeOldContext } from './summarizer'
+import { ContextLimitError } from './step-guard'
 import type { CompactionAttempt, ContextCheckpoint, StoredContextMessage } from './types'
 
 function historicalSummaryMessage(checkpoint: ContextCheckpoint): UIMessage {
@@ -69,7 +70,7 @@ export async function prepareSessionContext(input: {
   const originalMessages = storedMessages.map(item => item.message)
 
   if (decision.kind === 'overflow') {
-    throw new Error(`chat context exceeds the configured budget (${decision.reason})`)
+    throw new ContextLimitError(decision.estimatedBeforeTokens, input.settings.contextWindowTokens)
   }
   if (decision.kind === 'pass') {
     const modelMessages = modelMessagesFor(checkpoint, storedMessages.filter(item => checkpoint === null || item.position > checkpoint.throughMessagePosition))
