@@ -8,6 +8,7 @@ import { createTurnRepository } from './turn-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   validateModelId,
+  type CompactionAttemptView,
   type ChatMessageStatus,
   type ChatStopReason,
   type ChatSessionStatus,
@@ -64,6 +65,26 @@ interface TurnRow {
   started_at: string
   finished_at: string | null
   updated_at: string
+}
+
+interface CompactionAttemptRow {
+  id: string
+  session_id: string
+  turn_id: string
+  user_message_id: string | null
+  trigger: CompactionAttemptView['trigger']
+  status: CompactionAttemptView['status']
+  model_id: string
+  from_message_position: number
+  through_message_position: number
+  estimated_before_tokens: number
+  estimated_after_tokens: number
+  usage_json: string | null
+  cost_json: string | null
+  summary: string | null
+  error: string | null
+  started_at: string
+  finished_at: string | null
 }
 
 function toSummary(row: SessionRow, title = row.title): SessionSummary {
@@ -126,6 +147,51 @@ function getTitle(db: Database.Database, sessionId: string, fallback: string): s
   } catch {
     return fallback
   }
+}
+
+function decodeOptionalJson<T>(value: string | null): T | undefined {
+  return value === null ? undefined : JSON.parse(value) as T
+}
+
+function getCompactionAttempts(db: Database.Database, sessionId: string): CompactionAttemptView[] {
+  const rows = db.prepare(`
+    SELECT a.id, a.session_id, a.turn_id, a.trigger, a.status, a.model_id,
+           a.from_message_position, a.through_message_position,
+           a.estimated_before_tokens, a.estimated_after_tokens,
+           a.usage_json, a.cost_json, c.summary, a.error, a.started_at,
+           a.finished_at, user_message.id AS user_message_id
+    FROM compaction_attempts AS a
+    LEFT JOIN context_checkpoints AS c ON c.id = a.checkpoint_id
+    LEFT JOIN messages AS user_message
+      ON user_message.turn_id = a.turn_id AND user_message.role = 'user'
+    WHERE a.session_id = ?
+    GROUP BY a.id
+    ORDER BY a.started_at ASC, a.id ASC
+  `).all(sessionId) as CompactionAttemptRow[]
+
+  return rows.map(row => {
+    const usage = decodeOptionalJson<CompactionAttemptView['usage']>(row.usage_json)
+    const costRub = decodeOptionalJson<CompactionAttemptView['costRub']>(row.cost_json)
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      turnId: row.turn_id,
+      ...(row.user_message_id === null ? {} : { userMessageId: row.user_message_id }),
+      trigger: row.trigger,
+      status: row.status,
+      modelId: row.model_id,
+      fromMessagePosition: row.from_message_position,
+      throughMessagePosition: row.through_message_position,
+      estimatedBeforeTokens: row.estimated_before_tokens,
+      estimatedAfterTokens: row.estimated_after_tokens,
+      ...(usage === undefined ? {} : { usage }),
+      ...(costRub === undefined ? {} : { costRub }),
+      ...(row.summary === null ? {} : { summary: row.summary }),
+      ...(row.error === null ? {} : { error: row.error }),
+      startedAt: row.started_at,
+      ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+    }
+  })
 }
 
 function toTurnSummary(row: TurnRow): SessionTurnSummary {
@@ -313,6 +379,7 @@ export function createSessionRepository(db: Database.Database) {
       messages,
       lastTurn,
       modelId: row.model_id,
+      compactionAttempts: getCompactionAttempts(db, id),
     }
   }
 

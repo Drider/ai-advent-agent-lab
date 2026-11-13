@@ -3,6 +3,8 @@ import type { ChatCostSettings, SessionSummary } from '~/shared/chat'
 
 const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
 const detailedStatistics = defineModel<boolean>('detailedStatistics', { default: false })
+const compactionEnabled = defineModel<boolean>('compactionEnabled', { required: true })
+const compactionThreshold = defineModel<string>('compactionThreshold', { required: true })
 
 const props = defineProps<{
   items: SessionSummary[]
@@ -57,8 +59,12 @@ function formatDate(value: string): string {
       :context-limit="props.contextLimit"
       :default-model="props.defaultModel"
       :save-error="props.modelSaveError"
+      :compaction-enabled="compactionEnabled"
+      :compaction-threshold="compactionThreshold"
       @update:model-value="emit('update:modelValue', $event)"
       @update:context-limit="emit('update:contextLimit', $event)"
+      @update:compaction-enabled="compactionEnabled = $event"
+      @update:compaction-threshold="compactionThreshold = $event"
     />
     <ChatCostSettings v-model="costSettings" />
 

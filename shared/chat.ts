@@ -86,10 +86,22 @@ export function latestContextUsage(messages: ChatUIMessage[], limit?: number) {
   }
 }
 
-export function dialogueCostTotals(messages: ChatUIMessage[]): Map<string, number> {
+export function dialogueCostTotals(messages: ChatUIMessage[], compactionAttempts: CompactionAttemptView[] = []): Map<string, number> {
   const totals = new Map<string, number>()
   let total = 0
+  const compactionCosts = new Map<string, number>()
+  for (const attempt of compactionAttempts) {
+    if (!attempt.userMessageId || attempt.costRub === undefined) continue
+    compactionCosts.set(attempt.userMessageId, (compactionCosts.get(attempt.userMessageId) ?? 0) + attempt.costRub.total)
+  }
   for (const message of messages) {
+    if (message.role === 'user') {
+      const cost = compactionCosts.get(message.id)
+      if (cost === undefined) continue
+      total += cost
+      totals.set(message.id, total)
+      continue
+    }
     if (message.role !== 'assistant' || !message.metadata?.costRub) continue
     total += message.metadata.costRub.total
     totals.set(message.id, total)
@@ -153,10 +165,31 @@ export interface SessionTurnSummary {
   updatedAt: string
 }
 
+export interface CompactionAttemptView {
+  id: string
+  sessionId: string
+  turnId: string
+  userMessageId?: string
+  trigger: 'message_count' | 'context_fraction' | 'fallback_limit'
+  status: 'running' | 'completed' | 'failed'
+  modelId: string
+  fromMessagePosition: number
+  throughMessagePosition: number
+  estimatedBeforeTokens: number
+  estimatedAfterTokens: number
+  usage?: ChatTokenUsage
+  costRub?: ChatCostRub
+  summary?: string
+  error?: string
+  startedAt: string
+  finishedAt?: string
+}
+
 export interface SessionDetail extends SessionSummary {
   messages: ChatUIMessage[]
   lastTurn: SessionTurnSummary | null
   modelId: string | null
+  compactionAttempts: CompactionAttemptView[]
 }
 
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'
@@ -172,6 +205,28 @@ export interface ChatCompactionSettings {
 export const DEFAULT_COMPACTION_SETTINGS: ChatCompactionSettings = {
   enabled: true,
   messageThreshold: 20,
+}
+
+export function buildChatCompactionSettings(input: {
+  enabled: boolean
+  messageThreshold: string | number
+  contextWindowTokens?: string | number
+}): ChatCompactionSettings {
+  const threshold = typeof input.messageThreshold === 'number'
+    ? input.messageThreshold
+    : Number(input.messageThreshold)
+  const contextWindowTokens = input.contextWindowTokens === undefined
+    ? undefined
+    : typeof input.contextWindowTokens === 'number'
+      ? input.contextWindowTokens
+      : parseContextLimit(input.contextWindowTokens)
+  return validateCompactionSettings({
+    enabled: input.enabled,
+    messageThreshold: Number.isSafeInteger(threshold) && threshold >= MIN_COMPACTION_MESSAGE_THRESHOLD
+      ? threshold
+      : DEFAULT_COMPACTION_SETTINGS.messageThreshold,
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+  })
 }
 
 const MIN_COMPACTION_MESSAGE_THRESHOLD = 12

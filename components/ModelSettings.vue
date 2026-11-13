@@ -4,11 +4,15 @@ defineProps<{
   defaultModel: string
   saveError?: string | null
   contextLimit: string
+  compactionEnabled: boolean
+  compactionThreshold: string
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   'update:contextLimit': [value: string]
+  'update:compactionEnabled': [value: boolean]
+  'update:compactionThreshold': [value: string]
 }>()
 </script>
 
@@ -62,6 +66,24 @@ const emit = defineEmits<{
       @update:model-value="emit('update:contextLimit', String($event))"
     />
     <p class="model-settings__hint">Лимит задаётся для выбранной модели и используется только для расчёта заполнения.</p>
+    <label class="model-settings__toggle">
+      <input
+        type="checkbox"
+        :checked="compactionEnabled"
+        @change="emit('update:compactionEnabled', ($event.target as HTMLInputElement).checked)"
+      >
+      <span>Сжимать старую историю</span>
+    </label>
+    <label class="model-settings__label" for="compaction-threshold">Порог сжатия, сообщений</label>
+    <UInput
+      id="compaction-threshold"
+      :model-value="compactionThreshold"
+      type="number"
+      min="12"
+      step="1"
+      @update:model-value="emit('update:compactionThreshold', String($event))"
+    />
+    <p class="model-settings__hint">Минимум 12. Последние 10 сообщений сохраняются без изменений.</p>
     <p v-if="saveError" class="model-settings__error" role="alert">{{ saveError }}</p>
   </div>
 </template>

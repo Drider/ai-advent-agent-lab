@@ -8,6 +8,7 @@ import type { ChatUIMessage } from '../shared/chat'
 import { openChatDatabase } from '../server/persistence/db'
 import { ChatStorageError, createSessionRepository } from '../server/persistence/session-repository'
 import { createTurnRepository } from '../server/persistence/turn-repository'
+import { createCompactionRepository } from '../server/context-compaction/repository'
 
 const temporaryDirectories: string[] = []
 
@@ -35,6 +36,69 @@ afterEach(async () => {
 })
 
 describe('session repository', () => {
+  it('returns compaction attempts with their user message after reopening', async () => {
+    const filePath = await createDatabasePath()
+    const db = openChatDatabase(filePath)
+    const repository = createSessionRepository(db)
+    const session = repository.createSession()
+    const userMessage: ChatUIMessage = { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: 'Сожми историю' }] }
+    const turn = createTurnRepository(db).beginUserTurn({
+      sessionId: session.id,
+      requestId: randomUUID(),
+      modelId: 'mock-model',
+      message: userMessage,
+      agentConfig: {},
+    })
+    const compaction = createCompactionRepository(db)
+    const attemptId = compaction.beginAttempt({
+      sessionId: session.id,
+      turnId: turn.turnId,
+      trigger: 'message_count',
+      modelId: 'mock-model',
+      fromMessagePosition: 0,
+      throughMessagePosition: 0,
+      estimatedBeforeTokens: 1000,
+      estimatedAfterTokens: 200,
+    })
+    compaction.finishAttempt({
+      attemptId,
+      status: 'completed',
+      summary: 'Сводка истории',
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+      costRub: { input: 0.02, output: 0.01, total: 0.03 },
+    })
+    const failedAttemptId = compaction.beginAttempt({
+      sessionId: session.id,
+      turnId: turn.turnId,
+      trigger: 'context_fraction',
+      modelId: 'mock-model',
+      fromMessagePosition: 1,
+      throughMessagePosition: 1,
+      estimatedBeforeTokens: 2000,
+      estimatedAfterTokens: 400,
+    })
+    compaction.finishAttempt({ attemptId: failedAttemptId, status: 'failed', error: 'provider failed' })
+    db.close()
+
+    const reopened = openChatDatabase(filePath)
+    const detail = await createSessionRepository(reopened).getSession(session.id)
+
+    expect(detail?.compactionAttempts[0]).toMatchObject({
+      id: attemptId,
+      userMessageId: userMessage.id,
+      status: 'completed',
+      summary: 'Сводка истории',
+      costRub: { total: 0.03 },
+    })
+    expect(detail?.compactionAttempts[1]).toMatchObject({
+      id: failedAttemptId,
+      userMessageId: userMessage.id,
+      status: 'failed',
+      error: 'provider failed',
+    })
+    reopened.close()
+  })
+
   it('shows a legacy timeout reason from the matching diagnostic entry', async () => {
     const filePath = await createDatabasePath()
     const db = openChatDatabase(filePath)

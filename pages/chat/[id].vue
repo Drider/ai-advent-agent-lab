@@ -2,7 +2,7 @@
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import ChatSessionList from '~/components/ChatSessionList.vue'
 import ChatWorkspace from '~/components/ChatWorkspace.vue'
-import { pricingFromSettings, validateModelId, type ChatCostSettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
+import { DEFAULT_COMPACTION_SETTINGS, pricingFromSettings, validateModelId, type ChatCostSettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
 import { selectInitialSession } from '~/shared/session-navigation'
 
 interface SessionListResponse {
@@ -18,6 +18,8 @@ const modelId = shallowRef(defaultModel)
 const costSettings = shallowRef<ChatCostSettings>({ enabled: false, inputPrice: '', outputPrice: '' })
 const detailedStatistics = shallowRef(false)
 const contextLimits = shallowRef<Record<string, string>>({})
+const compactionEnabled = shallowRef(DEFAULT_COMPACTION_SETTINGS.enabled)
+const compactionThreshold = shallowRef(String(DEFAULT_COMPACTION_SETTINGS.messageThreshold))
 const contextLimit = computed({
   get: () => contextLimits.value[modelId.value] ?? '',
   set: (value: string) => {
@@ -190,6 +192,16 @@ onMounted(async () => {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
   try {
+    const saved = JSON.parse(localStorage.getItem('agent-chat-compaction-settings-v1') ?? 'null') as unknown
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      const record = saved as Record<string, unknown>
+      if (typeof record.enabled === 'boolean') compactionEnabled.value = record.enabled
+      if (typeof record.messageThreshold === 'number' && Number.isSafeInteger(record.messageThreshold)) compactionThreshold.value = String(record.messageThreshold)
+    }
+  } catch {
+    operationError.value ??= 'Не удалось прочитать локальные настройки сжатия.'
+  }
+  try {
     detailedStatistics.value = localStorage.getItem('agent-chat-detailed-statistics-v1') === 'true'
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
@@ -235,6 +247,15 @@ watch(contextLimits, value => {
   }
 })
 
+watch([compactionEnabled, compactionThreshold], ([enabled, threshold]) => {
+  if (!import.meta.client) return
+  try {
+    localStorage.setItem('agent-chat-compaction-settings-v1', JSON.stringify({ enabled, messageThreshold: Number(threshold) }))
+  } catch {
+    operationError.value ??= 'Не удалось сохранить настройки сжатия в браузере.'
+  }
+})
+
 watch(sessionId, () => {
   void loadSession()
 })
@@ -263,6 +284,8 @@ watch(sessionId, () => {
       :deleting-id="deletingId"
       v-model:cost-settings="costSettings"
       v-model:detailed-statistics="detailedStatistics"
+      v-model:compaction-enabled="compactionEnabled"
+      v-model:compaction-threshold="compactionThreshold"
       :default-model="defaultModel"
       :loading="listLoading"
       :disabled="workspaceBusy || Boolean(deletingId)"
@@ -281,6 +304,8 @@ watch(sessionId, () => {
       :pricing="pricing"
       :show-cost="costSettings.enabled"
       :show-detailed-statistics="detailedStatistics"
+      :compaction-enabled="compactionEnabled"
+      :compaction-threshold="compactionThreshold"
       :operation-error="operationError"
       @new-session="handleNewSession"
       @updated="handleUpdated"

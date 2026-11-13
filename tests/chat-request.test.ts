@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CHAT_MODEL,
   DEFAULT_COMPACTION_SETTINGS,
+  buildChatCompactionSettings,
   validateChatRequest,
   validateCompactionSettings,
   validateModelId,
@@ -33,6 +34,14 @@ describe('validateModelId', () => {
 })
 
 describe('validateChatRequest', () => {
+  it('normalizes compaction settings used by both transport request bodies', () => {
+    expect(buildChatCompactionSettings({ enabled: true, messageThreshold: '12', contextWindowTokens: '128000' })).toEqual({
+      enabled: true,
+      messageThreshold: 12,
+      contextWindowTokens: 128000,
+    })
+  })
+
   it('accepts one new user message with UUID request identifiers', () => {
     expect(validateChatRequest({
       kind: 'message',

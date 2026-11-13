@@ -3,12 +3,14 @@ import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
-import { dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
+import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 
 const props = defineProps<{
   session: SessionDetail
   modelId: string
   contextLimit: string
+  compactionEnabled: boolean
+  compactionThreshold: string
   pricing?: ChatPricing
   showCost: boolean
   showDetailedStatistics?: boolean
@@ -30,6 +32,14 @@ const continuationError = shallowRef<string | null>(null)
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
+
+function getCompactionSettings(): ChatCompactionSettings {
+  return buildChatCompactionSettings({
+    enabled: props.compactionEnabled,
+    messageThreshold: props.compactionThreshold,
+    contextWindowTokens: props.contextLimit,
+  })
+}
 
 const transport = new DefaultChatTransport<ChatUIMessage>({
   api: '/api/chat',
@@ -57,6 +67,7 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
         message,
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
+        compaction: getCompactionSettings(),
       } satisfies ChatRequestBody,
     }
   },
@@ -84,7 +95,15 @@ const {
 })
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
-const dialogueTotals = computed(() => dialogueCostTotals(messages.value))
+const dialogueTotals = computed(() => dialogueCostTotals(messages.value, props.session.compactionAttempts))
+const compactionAttemptsByUserMessage = computed(() => {
+  const grouped = new Map<string, SessionDetail['compactionAttempts']>()
+  for (const attempt of props.session.compactionAttempts) {
+    if (!attempt.userMessageId) continue
+    grouped.set(attempt.userMessageId, [...(grouped.get(attempt.userMessageId) ?? []), attempt])
+  }
+  return grouped
+})
 const totalDialogueCost = computed(() => [...dialogueTotals.value.values()].at(-1))
 const tokenFormatter = new Intl.NumberFormat('ru-RU')
 const costFormatter = new Intl.NumberFormat('ru-RU', {
@@ -148,6 +167,7 @@ async function handleSubmit(event?: Event): Promise<void> {
   } catch (caughtError) {
     continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось отправить сообщение'
     draft.value = text
+    emit('updated')
   }
 }
 
@@ -182,11 +202,13 @@ async function handleContinue(): Promise<void> {
         sourceTurnId,
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
+        compaction: getCompactionSettings(),
       } satisfies Omit<Extract<ChatRequestBody, { kind: 'continue' }>, 'message'>,
     })
   } catch (caughtError) {
     continuationError.value = caughtError instanceof Error ? caughtError.message : 'Продолжение недоступно'
     lastTurnStatus.value = 'failed'
+    emit('updated')
   }
 }
 
@@ -278,6 +300,18 @@ function dismissError(): void {
             :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
+          <details
+            v-for="attempt in compactionAttemptsByUserMessage.get(message.id) ?? []"
+            :key="attempt.id"
+            class="compaction-attempt"
+          >
+            <summary>
+              Сжатие контекста: {{ attempt.status === 'completed' ? 'выполнено' : attempt.status === 'failed' ? 'ошибка' : 'в работе' }}
+            </summary>
+            <p v-if="attempt.summary" class="compaction-attempt__summary">{{ attempt.summary }}</p>
+            <p v-if="attempt.error" class="compaction-attempt__error">{{ attempt.error }}</p>
+            <p v-if="attempt.costRub" class="compaction-attempt__meta">Стоимость сжатия: {{ formatCost(attempt.costRub.total) }}</p>
+          </details>
         </div>
       </template>
     </UChatMessages>
@@ -297,3 +331,29 @@ function dismissError(): void {
     </form>
   </main>
 </template>
+
+<style scoped>
+.compaction-attempt {
+  margin-top: 0.5rem;
+  border-left: 2px solid #cbd5e1;
+  padding-left: 0.65rem;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.compaction-attempt summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.compaction-attempt__summary,
+.compaction-attempt__error,
+.compaction-attempt__meta {
+  margin: 0.35rem 0 0;
+  white-space: pre-wrap;
+}
+
+.compaction-attempt__error {
+  color: #b91c1c;
+}
+</style>
