@@ -5,6 +5,7 @@ import {
   ToolLoopAgent,
   type LanguageModelUsage,
   type LanguageModel,
+  type ModelMessage,
   type Tool,
   type TextStreamPart,
   type UIMessage,
@@ -18,6 +19,7 @@ import { recordToolExecution } from './recorded-tools'
 import { sumUsage, summarizeTokenUsage } from './token-usage'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import type { createTurnRepository } from '../persistence/turn-repository'
+import { assertStepWithinBudget } from '../context-compaction/step-guard'
 
 export const MAX_AGENT_STEPS = 40
 export const AGENT_TIMEOUT_MS = 600_000
@@ -61,6 +63,8 @@ export function createChatAgent(
   options: {
     includeRawChunks?: boolean
     disableMutatingTools?: boolean
+    contextWindowTokens?: number
+    promptOverheadTokens?: number
     onError?: (event: { error: unknown }) => void
     onAbort?: (event: { reason?: unknown }) => void
   } = {},
@@ -80,12 +84,19 @@ export function createChatAgent(
       ...sessionTools,
     },
     stopWhen: isStepCount(MAX_AGENT_STEPS),
-    prepareStep: ({ stepNumber, instructions }) => stepNumber === MAX_AGENT_STEPS - 1
-      ? {
-          toolChoice: 'none',
-          instructions: `${instructions ?? ''} ${FINAL_STEP_INSTRUCTIONS}`,
-        }
-      : undefined,
+    prepareStep: ({ stepNumber, instructions, messages }) => {
+      assertStepWithinBudget({
+        messages: messages as ModelMessage[],
+        contextWindowTokens: options.contextWindowTokens,
+        promptOverheadTokens: options.promptOverheadTokens ?? 0,
+      })
+      return stepNumber === MAX_AGENT_STEPS - 1
+        ? {
+            toolChoice: 'none',
+            instructions: `${instructions ?? ''} ${FINAL_STEP_INSTRUCTIONS}`,
+          }
+        : undefined
+    },
     timeout: { totalMs: AGENT_TIMEOUT_MS },
     onError: options.onError,
     onAbort: options.onAbort,
@@ -152,6 +163,8 @@ export async function streamChatAgent(input: {
   turnId?: string
   turnRepository?: ReturnType<typeof createTurnRepository>
   disableMutatingTools?: boolean
+  contextWindowTokens?: number
+  promptOverheadTokens?: number
   sensitiveValues?: readonly string[]
 }, diceTool = createDiceTool(), savedRollsTool = createListSavedRollsTool(), fileTools: FileTools = createFileTools(), sessionTools?: SessionTools): Promise<Response> {
   const startedAtMs = Date.now()
@@ -335,6 +348,8 @@ export async function streamChatAgent(input: {
         {
           includeRawChunks: true,
           disableMutatingTools: input.disableMutatingTools,
+          contextWindowTokens: input.contextWindowTokens,
+          promptOverheadTokens: input.promptOverheadTokens,
           onError: ({ error }) => { streamFailure ??= error },
           onAbort: ({ reason }) => { abortReason = reason },
         },

@@ -706,6 +706,67 @@ describe('chat agent', () => {
     expect(JSON.stringify(log.requests[0])).toContain('read_file')
   })
 
+  it('stops before sending an oversized second step', async () => {
+    await writeFile(join(fileDirectory, 'large.txt'), 'x'.repeat(15_000))
+    const model = new MockLanguageModelV3({
+      doGenerate: [
+        fileToolCallResult('read-large', 'read_file', { path: 'large.txt' }),
+        textResult('Этого шага быть не должно.'),
+      ],
+    })
+
+    await expect(createChatAgent(
+      model,
+      createTestDiceTool(fixedDraw(1)),
+      { contextWindowTokens: 1_000, promptOverheadTokens: 0 },
+      createTestSavedRollsTool(),
+      createTestFileTools(),
+    ).generate({ prompt: 'Прочитай large.txt' })).rejects.toMatchObject({ code: 'context_length_exceeded' })
+
+    expect(model.doGenerateCalls).toHaveLength(1)
+  })
+
+  it('persists a context-limit stop after a completed tool step', async () => {
+    await writeFile(join(fileDirectory, 'large.txt'), 'x'.repeat(15_000))
+    const db = openChatDatabase(join(fileDirectory, 'context-limit.sqlite'))
+    const sessions = createSessionRepository(db)
+    const turns = createTurnRepository(db)
+    const session = sessions.createSession()
+    const message = userMessage('Прочитай large.txt') as ChatUIMessage
+    const turn = turns.beginUserTurn({
+      sessionId: session.id,
+      requestId: randomUUID(),
+      modelId: 'mock-model',
+      message,
+      agentConfig: { version: 1 },
+    })
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamFileToolCallResult('read-large', 'read_file', { path: 'large.txt' }),
+        streamTextResult('Этого шага быть не должно.'),
+      ],
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [message],
+      runId: '2099-12-31T23:59:59.999Z',
+      logLevel: 'off',
+      sessionId: session.id,
+      turnId: turn.turnId,
+      turnRepository: turns,
+      contextWindowTokens: 1_000,
+      promptOverheadTokens: 0,
+    }, createTestDiceTool(fixedDraw(1)), createTestSavedRollsTool(), createTestFileTools())
+    await response.text()
+
+    expect(model.doStreamCalls).toHaveLength(1)
+    expect(turns.getLastTurn(session.id)).toMatchObject({ status: 'failed', stopReason: 'context_limit' })
+    expect(db.prepare('SELECT status FROM tool_executions WHERE turn_id = ?').get(turn.turnId)).toEqual({ status: 'completed' })
+    db.close()
+  })
+
   it('reserves the last step for a response without starting another tool call', async () => {
     let call = 0
     const model = new MockLanguageModelV3({

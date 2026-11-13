@@ -100,9 +100,10 @@ export default defineEventHandler(async (event) => {
   }
 
   let preparedContext
+  let promptOverheadTokens = 2_000
   try {
     const instructions = agentConfig.instructions
-    const promptOverheadTokens = typeof instructions === 'string'
+    promptOverheadTokens = typeof instructions === 'string'
       ? Math.ceil(Buffer.byteLength(instructions, 'utf8') / 2) + 2_000
       : 2_000
     preparedContext = await prepareSessionContext({
@@ -131,6 +132,8 @@ export default defineEventHandler(async (event) => {
       modelId: chatConfig.modelId,
       messages: preparedContext.modelMessages,
       originalMessages: preparedContext.originalMessages,
+      contextWindowTokens: compactionSettings.contextWindowTokens,
+      promptOverheadTokens,
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,
