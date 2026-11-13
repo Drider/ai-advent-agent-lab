@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 
-export const CHAT_SCHEMA_VERSION = 4
+export const CHAT_SCHEMA_VERSION = 5
 
 export function migrateChatDatabase(db: Database.Database): void {
   const currentVersion = Number(db.pragma('user_version', { simple: true }))
@@ -106,6 +106,44 @@ export function migrateChatDatabase(db: Database.Database): void {
         for (const reason of reasons) restore.run(reason.stop_reason, reason.id)
       }
     }
+    if (currentVersion < 5) db.exec(`
+      CREATE TABLE IF NOT EXISTS context_checkpoints (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        from_message_position INTEGER NOT NULL CHECK (from_message_position >= 0),
+        through_message_position INTEGER NOT NULL CHECK (through_message_position >= from_message_position),
+        summary TEXT NOT NULL,
+        format_version INTEGER NOT NULL CHECK (format_version >= 1),
+        prompt_version INTEGER NOT NULL CHECK (prompt_version >= 1),
+        model_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (session_id, through_message_position)
+      );
+
+      CREATE TABLE IF NOT EXISTS compaction_attempts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+        trigger TEXT NOT NULL CHECK (trigger IN ('message_count', 'context_fraction', 'fallback_limit')),
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        model_id TEXT NOT NULL,
+        from_message_position INTEGER NOT NULL CHECK (from_message_position >= 0),
+        through_message_position INTEGER NOT NULL CHECK (through_message_position >= from_message_position),
+        estimated_before_tokens INTEGER NOT NULL CHECK (estimated_before_tokens >= 0),
+        estimated_after_tokens INTEGER NOT NULL CHECK (estimated_after_tokens >= 0),
+        usage_json TEXT CHECK (usage_json IS NULL OR json_valid(usage_json)),
+        cost_json TEXT CHECK (cost_json IS NULL OR json_valid(cost_json)),
+        checkpoint_id TEXT REFERENCES context_checkpoints(id) ON DELETE SET NULL,
+        error TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS context_checkpoints_session_position_idx
+        ON context_checkpoints (session_id, through_message_position DESC);
+      CREATE INDEX IF NOT EXISTS compaction_attempts_session_started_idx
+        ON compaction_attempts (session_id, started_at ASC);
+    `)
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
   } catch (error) {
