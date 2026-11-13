@@ -54,7 +54,7 @@ describe('session context', () => {
     db.close()
   })
 
-  it('bounds a long text history while retaining the first request and recent messages', async () => {
+  it('keeps a long text history intact for the UI and persistence layer', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessions = createSessionRepository(db)
     const session = sessions.createSession()
@@ -67,15 +67,15 @@ describe('session context', () => {
     }
 
     const context = await buildSessionContext(session.id, sessions)
-    expect(context.length).toBeLessThan(30)
+    expect(context).toHaveLength(30)
     expect(context[0]?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
     expect(context.at(-1)?.parts).toEqual([{ type: 'text', text: 'x'.repeat(9 * 1024) }])
-    expect(JSON.stringify(context).length).toBeLessThan(125_000)
+    expect(JSON.stringify(context).length).toBeGreaterThan(125_000)
     expect((await sessions.getSession(session.id))?.messages).toHaveLength(30)
     db.close()
   })
 
-  it('omits old tool outputs from a large model context while keeping saved history intact', async () => {
+  it('keeps old tool outputs intact because model compaction is handled separately', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessions = createSessionRepository(db)
     const session = sessions.createSession()
@@ -91,7 +91,7 @@ describe('session context', () => {
     saveMessage(db, session.id, { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: 'Продолжай' }] }, 2)
 
     const context = await buildSessionContext(session.id, sessions)
-    expect(context[1]?.parts).toEqual([{ type: 'text', text: 'Глава 1: краткое содержание.' }])
+    expect(context[1]?.parts).toEqual(assistant.parts)
     expect((await sessions.getSession(session.id))?.messages[1]?.parts).toEqual(assistant.parts)
     db.close()
   })

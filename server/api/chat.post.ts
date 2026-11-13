@@ -9,7 +9,7 @@ import { getChatDatabase } from '../persistence/db'
 import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
 import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-repository'
-import { buildSessionContext, SessionContextError } from '../utils/session-context'
+import { prepareSessionContext } from '../context-compaction/prepare'
 import type { ChatUIMessage } from '../../shared/chat'
 
 function getSafeRequestError(error: unknown): string {
@@ -53,6 +53,9 @@ export default defineEventHandler(async (event) => {
   if (!session) {
     throw createError({ statusCode: 404, statusMessage: 'Session not found' })
   }
+  const compactionSettings = request.compaction ?? { enabled: true, messageThreshold: 20 }
+  const agentConfig = getAgentConfig(compactionSettings)
+  const model = provider.chat(chatConfig.modelId)
   let turnId: string
   try {
     if (request.kind === 'message') {
@@ -61,7 +64,7 @@ export default defineEventHandler(async (event) => {
         requestId: request.requestId,
         modelId: chatConfig.modelId,
         message: request.message as ChatUIMessage,
-        agentConfig: getAgentConfig(),
+        agentConfig,
       }).turnId
     } else {
       const continuation = turns.assessContinuation(request.sourceTurnId)
@@ -77,7 +80,7 @@ export default defineEventHandler(async (event) => {
         sourceTurnId: request.sourceTurnId,
         modelId: chatConfig.modelId,
         message: request.message as ChatUIMessage,
-        agentConfig: getAgentConfig(),
+        agentConfig,
       }).turnId
     }
   } catch (error) {
@@ -96,14 +99,25 @@ export default defineEventHandler(async (event) => {
     throw error
   }
 
-  let messages
+  let preparedContext
   try {
-    messages = await buildSessionContext(request.sessionId, sessions)
+    const instructions = agentConfig.instructions
+    const promptOverheadTokens = typeof instructions === 'string'
+      ? Math.ceil(Buffer.byteLength(instructions, 'utf8') / 2) + 2_000
+      : 2_000
+    preparedContext = await prepareSessionContext({
+      db,
+      sessionId: request.sessionId,
+      turnId,
+      model,
+      modelId: chatConfig.modelId,
+      settings: compactionSettings,
+      pricing: request.pricing,
+      promptOverheadTokens,
+      abortSignal: event.web?.request?.signal,
+    })
   } catch (error) {
     turns.markFailed(turnId)
-    if (error instanceof SessionContextError && error.code === 'SESSION_NOT_FOUND') {
-      throw createError({ statusCode: 404, statusMessage: error.message })
-    }
     throw error
   }
 
@@ -113,9 +127,10 @@ export default defineEventHandler(async (event) => {
 
   try {
     return await streamChatAgent({
-      model: provider.chat(chatConfig.modelId),
+      model,
       modelId: chatConfig.modelId,
-      messages,
+      messages: preparedContext.modelMessages,
+      originalMessages: preparedContext.originalMessages,
       abortSignal,
       runId,
       logLevel: chatConfig.logLevel,

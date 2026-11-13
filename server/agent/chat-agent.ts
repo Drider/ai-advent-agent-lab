@@ -9,7 +9,7 @@ import {
   type TextStreamPart,
   type UIMessage,
 } from 'ai'
-import { calculateChatCost, stopReasonMessage, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
+import { calculateChatCost, DEFAULT_COMPACTION_SETTINGS, stopReasonMessage, type ChatCompactionSettings, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
 import { appendRunLogEntry, type RunLogEntry, type RunLogLevel, type RunLogStatus } from '../utils/run-logger'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createFileTools, type FileTools } from '../tools/files'
@@ -40,13 +40,14 @@ const AGENT_INSTRUCTIONS = [
 const FINAL_STEP_INSTRUCTIONS = 'Finish the current response using the results already available. Do not call more tools. If the user\'s request is not fully complete, clearly say what remains to be done so it can be continued later.'
 const AGENT_INSTRUCTIONS_HASH = createHash('sha256').update(AGENT_INSTRUCTIONS).digest('hex')
 
-export function getAgentConfig(): Record<string, unknown> {
+export function getAgentConfig(contextCompaction: ChatCompactionSettings = DEFAULT_COMPACTION_SETTINGS): Record<string, unknown> {
   return {
     version: 2,
     instructions: AGENT_INSTRUCTIONS,
     instructionsHash: AGENT_INSTRUCTIONS_HASH,
     finalStepInstructions: FINAL_STEP_INSTRUCTIONS,
     toolSetVersion: 1,
+    contextCompaction: { ...contextCompaction },
     limits: {
       maxSteps: MAX_AGENT_STEPS,
       timeoutMs: AGENT_TIMEOUT_MS,
@@ -142,6 +143,7 @@ export async function streamChatAgent(input: {
   model: LanguageModel
   modelId: string
   messages: UIMessage[]
+  originalMessages?: UIMessage[]
   abortSignal?: AbortSignal
   runId: string
   logLevel: RunLogLevel
@@ -343,12 +345,12 @@ export async function streamChatAgent(input: {
             runId: input.runId,
             modelId: input.modelId,
             logLevel: input.logLevel,
-            currentQuestion: getLastUserQuestion(input.messages),
+            currentQuestion: getLastUserQuestion(input.originalMessages ?? input.messages),
           },
         }),
       ),
       uiMessages: input.messages,
-      originalMessages: persisted ? input.messages as never : undefined,
+      originalMessages: persisted ? (input.originalMessages ?? input.messages) as never : undefined,
       generateMessageId: persisted ? () => assistantMessageId : undefined,
       abortSignal,
       timeout: { totalMs: AGENT_TIMEOUT_MS },
