@@ -65,7 +65,7 @@ const emit = defineEmits<{
       placeholder="Укажите лимит выбранной модели"
       @update:model-value="emit('update:contextLimit', String($event))"
     />
-    <p class="model-settings__hint">Лимит задаётся для выбранной модели и используется только для расчёта заполнения.</p>
+    <p class="model-settings__hint">Лимит задаётся для выбранной модели и используется для расчёта заполнения и сжатия истории. Он не меняет лимит провайдера.</p>
     <label class="model-settings__toggle">
       <input
         type="checkbox"
