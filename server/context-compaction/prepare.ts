@@ -1,10 +1,13 @@
 import type Database from 'better-sqlite3'
-import { validateUIMessages, type LanguageModel, type UIMessage } from 'ai'
-import { calculateChatCost, type ChatCompactionSettings, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
+import { validateUIMessages, type LanguageModel, type ModelMessage, type UIMessage } from 'ai'
+import { calculateChatCost, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
 import { createCompactionRepository } from './repository'
+import { createFactsRepository, type StickyFacts } from './facts-repository'
+import { updateFacts } from './facts'
 import { decideCompaction, type ContextDecision } from './policy'
 import { getCompactionErrorUsage, summarizeOldContext } from './summarizer'
-import { ContextLimitError } from './step-guard'
+import { assertStepWithinBudget, ContextLimitError } from './step-guard'
+import { selectSlidingWindow } from './sliding-window'
 import type { CompactionAttempt, ContextCheckpoint, StoredContextMessage } from './types'
 
 function historicalSummaryMessage(checkpoint: ContextCheckpoint): UIMessage {
@@ -39,6 +42,15 @@ function modelMessagesFor(
   ]
 }
 
+function stickyFactsMessage(facts: StickyFacts, throughPosition: number): UIMessage | undefined {
+  if (Object.keys(facts).length === 0) return undefined
+  return {
+    id: `sticky-facts-${throughPosition}`,
+    role: 'user',
+    parts: [{ type: 'text', text: `[Sticky facts]\n${JSON.stringify(facts)}` }],
+  }
+}
+
 function findAttempt(repository: ReturnType<typeof createCompactionRepository>, sessionId: string, attemptId: string): CompactionAttempt | undefined {
   return repository.listAttempts(sessionId).find(attempt => attempt.id === attemptId)
 }
@@ -50,6 +62,7 @@ export async function prepareSessionContext(input: {
   model: LanguageModel
   modelId: string
   settings: ChatCompactionSettings
+  contextStrategy?: ChatContextStrategySettings
   pricing?: ChatPricing
   promptOverheadTokens: number
   abortSignal?: AbortSignal
@@ -59,16 +72,81 @@ export async function prepareSessionContext(input: {
   attempt?: CompactionAttempt
 }> {
   const repository = createCompactionRepository(input.db)
+  const factsRepository = createFactsRepository(input.db)
   const storedMessages = stripTrailingInterruptedAssistant(await repository.loadMessages(input.sessionId))
   const checkpoint = repository.latestCheckpoint(input.sessionId)
+  const originalMessages = storedMessages.map(item => item.message)
+  const strategy = input.contextStrategy?.strategy ?? (input.settings.enabled ? 'summary' : 'off')
+
+  if (strategy === 'off' || strategy === 'sliding_window') {
+    const selected = strategy === 'sliding_window'
+      ? selectSlidingWindow(storedMessages, input.contextStrategy?.windowSize ?? 10)
+      : storedMessages
+    const modelMessages = await validateUIMessages({ messages: selected.map(item => item.message) })
+    assertStepWithinBudget({
+      messages: modelMessages as unknown as ModelMessage[],
+      contextWindowTokens: input.settings.contextWindowTokens,
+      promptOverheadTokens: input.promptOverheadTokens,
+    })
+    return { modelMessages, originalMessages }
+  }
+
+  if (strategy === 'sticky_facts') {
+    let facts = factsRepository.latestFacts(input.sessionId)
+    for (const stored of storedMessages) {
+      if (stored.message.role !== 'user' || stored.status !== 'complete') continue
+      const previous = factsRepository.existing(input.sessionId, stored.message.id)
+      if (previous?.status === 'completed') {
+        facts = previous.facts
+        continue
+      }
+      try {
+        const update = await updateFacts({
+          model: input.model,
+          previousFacts: facts,
+          userMessage: stored.message,
+          abortSignal: input.abortSignal,
+        })
+        const saved = factsRepository.saveFactsUpdate({
+          sessionId: input.sessionId,
+          sourceMessageId: stored.message.id,
+          throughMessagePosition: stored.position,
+          facts: update.facts,
+          usage: update.usage,
+          costRub: update.usage === undefined ? undefined : calculateChatCost(update.usage, input.pricing),
+        })
+        facts = saved.facts
+      } catch (error) {
+        factsRepository.saveFactsUpdate({
+          sessionId: input.sessionId,
+          sourceMessageId: stored.message.id,
+          throughMessagePosition: stored.position,
+          facts,
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'facts update failed',
+        })
+        throw error
+      }
+    }
+    const tail = selectSlidingWindow(storedMessages, input.contextStrategy?.windowSize ?? 10)
+    const factsMessage = stickyFactsMessage(facts, tail.at(-1)?.position ?? -1)
+    const modelMessages = await validateUIMessages({
+      messages: factsMessage === undefined ? tail.map(item => item.message) : [factsMessage, ...tail.map(item => item.message)],
+    })
+    assertStepWithinBudget({
+      messages: modelMessages as unknown as ModelMessage[],
+      contextWindowTokens: input.settings.contextWindowTokens,
+      promptOverheadTokens: input.promptOverheadTokens,
+    })
+    return { modelMessages, originalMessages }
+  }
+
   const decision = decideCompaction({
     messages: storedMessages,
     checkpoint,
     settings: input.settings,
     promptOverheadTokens: input.promptOverheadTokens,
   })
-  const originalMessages = storedMessages.map(item => item.message)
-
   if (decision.kind === 'overflow') {
     throw new ContextLimitError(decision.estimatedBeforeTokens, input.settings.contextWindowTokens)
   }

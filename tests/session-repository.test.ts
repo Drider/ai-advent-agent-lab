@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatUIMessage } from '../shared/chat'
+import { DEFAULT_CONTEXT_STRATEGY_SETTINGS } from '../shared/chat'
 import { openChatDatabase } from '../server/persistence/db'
 import { ChatStorageError, createSessionRepository } from '../server/persistence/session-repository'
 import { createTurnRepository } from '../server/persistence/turn-repository'
@@ -36,6 +37,21 @@ afterEach(async () => {
 })
 
 describe('session repository', () => {
+  it('stores context strategy settings per session', async () => {
+    const filePath = await createDatabasePath()
+    const db = openChatDatabase(filePath)
+    const repository = createSessionRepository(db)
+    const first = repository.createSession()
+    const second = repository.createSession()
+
+    expect(repository.getContextStrategySettings(first.id)).toEqual(DEFAULT_CONTEXT_STRATEGY_SETTINGS)
+    repository.setContextStrategySettings(first.id, { strategy: 'sliding_window', windowSize: 6, messageThreshold: 20 })
+
+    expect(repository.getContextStrategySettings(first.id)).toMatchObject({ strategy: 'sliding_window', windowSize: 6 })
+    expect(repository.getContextStrategySettings(second.id)).toEqual(DEFAULT_CONTEXT_STRATEGY_SETTINGS)
+    db.close()
+  })
+
   it('returns compaction attempts with their user message after reopening', async () => {
     const filePath = await createDatabasePath()
     const db = openChatDatabase(filePath)

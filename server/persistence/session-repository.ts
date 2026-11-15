@@ -5,15 +5,20 @@ import Database from 'better-sqlite3'
 import { validateUIMessages } from 'ai'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import { createTurnRepository } from './turn-repository'
+import { createFactsRepository } from '../context-compaction/facts-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
+  DEFAULT_CONTEXT_STRATEGY_SETTINGS,
+  validateContextStrategySettings,
   validateModelId,
   type CompactionAttemptView,
   type ChatMessageStatus,
   type ChatStopReason,
   type ChatSessionStatus,
+  type ChatContextStrategySettings,
   type ChatUIMessage,
   type SessionDetail,
+  type SessionBranchLink,
   type SessionSummary,
   type SessionTurnSummary,
 } from '../../shared/chat'
@@ -42,6 +47,9 @@ interface SessionRow {
   status: ChatSessionStatus
   revision: number
   model_id: string | null
+  context_strategy_json: string
+  parent_session_id: string | null
+  branch_source_message_id: string | null
 }
 
 interface MessageRow {
@@ -97,6 +105,17 @@ function toSummary(row: SessionRow, title = row.title): SessionSummary {
     ...(row.last_opened_at === null ? {} : { lastOpenedAt: row.last_opened_at }),
     status: row.status,
     revision: row.revision,
+    ...(row.parent_session_id === null ? {} : { parentSessionId: row.parent_session_id }),
+    ...(row.branch_source_message_id === null ? {} : { branchSourceMessageId: row.branch_source_message_id }),
+  }
+}
+
+function toBranchLink(row: { id: string; title: string; branch_source_message_id: string | null; updated_at: string }): SessionBranchLink {
+  return {
+    id: row.id,
+    title: row.title,
+    ...(row.branch_source_message_id === null ? {} : { branchSourceMessageId: row.branch_source_message_id }),
+    updatedAt: row.updated_at,
   }
 }
 
@@ -151,6 +170,15 @@ function getTitle(db: Database.Database, sessionId: string, fallback: string): s
 
 function decodeOptionalJson<T>(value: string | null): T | undefined {
   return value === null ? undefined : JSON.parse(value) as T
+}
+
+function decodeContextStrategy(value: string | null | undefined): ChatContextStrategySettings {
+  if (!value) return { ...DEFAULT_CONTEXT_STRATEGY_SETTINGS }
+  try {
+    return validateContextStrategySettings(JSON.parse(value))
+  } catch {
+    return { ...DEFAULT_CONTEXT_STRATEGY_SETTINGS }
+  }
 }
 
 function getCompactionAttempts(db: Database.Database, sessionId: string): CompactionAttemptView[] {
@@ -374,11 +402,27 @@ export function createSessionRepository(db: Database.Database) {
     }
     if (lastTurn) lastTurn.continuation = createTurnRepository(db).assessContinuation(lastTurn.id)
 
+    const factsRepository = createFactsRepository(db)
+    const parent = row.parent_session_id === null
+      ? undefined
+      : db.prepare('SELECT id, title, branch_source_message_id, updated_at FROM sessions WHERE id = ?').get(row.parent_session_id) as { id: string; title: string; branch_source_message_id: string | null; updated_at: string } | undefined
+    const children = db.prepare(`
+      SELECT id, title, branch_source_message_id, updated_at
+      FROM sessions
+      WHERE parent_session_id = ?
+      ORDER BY updated_at DESC, id DESC
+    `).all(id) as Array<{ id: string; title: string; branch_source_message_id: string | null; updated_at: string }>
+
     return {
       ...toSummary(row, getTitle(db, row.id, row.title)),
       messages,
       lastTurn,
       modelId: row.model_id,
+      contextStrategy: decodeContextStrategy(row.context_strategy_json),
+      stickyFacts: factsRepository.latestFacts(id),
+      factsUpdates: factsRepository.listFactsUpdates(id),
+      ...(parent === undefined ? {} : { parent: toBranchLink(parent) }),
+      children: children.map(toBranchLink),
       compactionAttempts: getCompactionAttempts(db, id),
     }
   }
@@ -389,6 +433,19 @@ export function createSessionRepository(db: Database.Database) {
     if (result.changes !== 1) {
       throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
     }
+  }
+
+  function getContextStrategySettings(id: string): ChatContextStrategySettings {
+    const row = db.prepare('SELECT context_strategy_json FROM sessions WHERE id = ?').get(id) as { context_strategy_json: string } | undefined
+    if (!row) throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
+    return decodeContextStrategy(row.context_strategy_json)
+  }
+
+  function setContextStrategySettings(id: string, settings: ChatContextStrategySettings): void {
+    const validated = validateContextStrategySettings(settings)
+    const result = db.prepare('UPDATE sessions SET context_strategy_json = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
+      .run(JSON.stringify(validated), new Date().toISOString(), id)
+    if (result.changes !== 1) throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
   }
 
   function activateSession(id: string): void {
@@ -421,5 +478,5 @@ export function createSessionRepository(db: Database.Database) {
     }).immediate()
   }
 
-  return { createSession, listSessions, getSession, activateSession, setModelId, deleteSession }
+  return { createSession, listSessions, getSession, activateSession, setModelId, getContextStrategySettings, setContextStrategySettings, deleteSession }
 }

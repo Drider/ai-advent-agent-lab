@@ -2,7 +2,7 @@
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import ChatSessionList from '~/components/ChatSessionList.vue'
 import ChatWorkspace from '~/components/ChatWorkspace.vue'
-import { DEFAULT_COMPACTION_SETTINGS, pricingFromSettings, validateModelId, type ChatCostSettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
+import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, pricingFromSettings, validateContextStrategySettings, validateModelId, type ChatCostSettings, type ChatContextStrategySettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
 import { selectInitialSession } from '~/shared/session-navigation'
 
 interface SessionListResponse {
@@ -20,6 +20,8 @@ const detailedStatistics = shallowRef(false)
 const contextLimits = shallowRef<Record<string, string>>({})
 const compactionEnabled = shallowRef(DEFAULT_COMPACTION_SETTINGS.enabled)
 const compactionThreshold = shallowRef(String(DEFAULT_COMPACTION_SETTINGS.messageThreshold))
+const contextStrategy = shallowRef<ChatContextStrategySettings>({ ...DEFAULT_CONTEXT_STRATEGY_SETTINGS })
+const legacyCompactionSnapshot = shallowRef<{ enabled: boolean; messageThreshold: number } | null>(null)
 const contextLimit = computed({
   get: () => contextLimits.value[modelId.value] ?? '',
   set: (value: string) => {
@@ -57,12 +59,43 @@ async function loadSession(): Promise<void> {
     if (sessionId.value !== requestedId) return
     session.value = loadedSession
     modelId.value = loadedSession.modelId ?? loadedSession.lastTurn?.modelId ?? defaultModel
+    contextStrategy.value = loadedSession.contextStrategy
+    compactionEnabled.value = loadedSession.contextStrategy.strategy === 'summary'
+    compactionThreshold.value = String(loadedSession.contextStrategy.messageThreshold)
   } catch (caughtError) {
     if (sessionId.value !== requestedId) return
     session.value = null
     error.value = caughtError instanceof Error ? caughtError.message : 'Сессия не найдена'
   } finally {
     if (sessionId.value === requestedId) loading.value = false
+  }
+}
+
+async function handleSettingsSave(payload: {
+  modelId: string
+  contextLimit: string
+  contextStrategy: ChatContextStrategySettings
+  costSettings: ChatCostSettings
+  detailedStatistics: boolean
+}): Promise<void> {
+  const id = session.value?.id
+  if (!id) return
+  try {
+    const validModelId = validateModelId(payload.modelId)
+    const validStrategy = validateContextStrategySettings(payload.contextStrategy)
+    await modelSave
+    await $fetch(`/api/sessions/${id}/model`, { method: 'PATCH', body: { modelId: validModelId } })
+    await $fetch(`/api/sessions/${id}/context-strategy`, { method: 'PATCH', body: validStrategy })
+    modelId.value = validModelId
+    contextStrategy.value = validStrategy
+    compactionEnabled.value = validStrategy.strategy === 'summary'
+    compactionThreshold.value = String(validStrategy.messageThreshold)
+    contextLimit.value = payload.contextLimit
+    costSettings.value = payload.costSettings
+    detailedStatistics.value = payload.detailedStatistics
+    modelSaveError.value = null
+  } catch (caughtError) {
+    modelSaveError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось сохранить настройки диалога.'
   }
 }
 
@@ -182,6 +215,54 @@ async function handleUpdated(): Promise<void> {
   ])
 }
 
+async function handleCreateBranch(messageId: string): Promise<void> {
+  if (workspaceBusy.value || deletingId.value) return
+  operationError.value = null
+  try {
+    const branch = await $fetch<SessionSummary>(`/api/sessions/${sessionId.value}/branches`, {
+      method: 'POST',
+      body: { throughMessageId: messageId },
+    })
+    await navigateTo(`/chat/${branch.id}`)
+  } catch (caughtError) {
+    operationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось создать ветку диалога.'
+  }
+}
+
+async function importLegacyCompactionSettings(): Promise<void> {
+  const legacy = legacyCompactionSnapshot.value
+  const loaded = session.value
+  if (!legacy || !loaded || localStorage.getItem('agent-chat-context-strategy-migrated-v1') === 'true') return
+
+  // The old browser setting was global. Import it only while the session still
+  // has the new default, then let the per-session setting take over.
+  if (loaded.contextStrategy.strategy !== DEFAULT_CONTEXT_STRATEGY_SETTINGS.strategy
+    || loaded.contextStrategy.messageThreshold !== DEFAULT_CONTEXT_STRATEGY_SETTINGS.messageThreshold) {
+    localStorage.setItem('agent-chat-context-strategy-migrated-v1', 'true')
+    return
+  }
+
+  const migrated = validateContextStrategySettings({
+    ...loaded.contextStrategy,
+    strategy: legacy.enabled ? 'summary' : 'off',
+    messageThreshold: legacy.messageThreshold,
+  })
+  if (migrated.strategy === loaded.contextStrategy.strategy && migrated.messageThreshold === loaded.contextStrategy.messageThreshold) {
+    localStorage.setItem('agent-chat-context-strategy-migrated-v1', 'true')
+    return
+  }
+
+  try {
+    await $fetch(`/api/sessions/${loaded.id}/context-strategy`, { method: 'PATCH', body: migrated })
+    contextStrategy.value = migrated
+    compactionEnabled.value = migrated.strategy === 'summary'
+    compactionThreshold.value = String(migrated.messageThreshold)
+    localStorage.setItem('agent-chat-context-strategy-migrated-v1', 'true')
+  } catch {
+    operationError.value = 'Не удалось перенести старую настройку сжатия в настройки диалога.'
+  }
+}
+
 onMounted(async () => {
   try {
     const saved = JSON.parse(localStorage.getItem('agent-chat-context-limits-v1') ?? '{}') as unknown
@@ -196,7 +277,15 @@ onMounted(async () => {
     if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
       const record = saved as Record<string, unknown>
       if (typeof record.enabled === 'boolean') compactionEnabled.value = record.enabled
-      if (typeof record.messageThreshold === 'number' && Number.isSafeInteger(record.messageThreshold)) compactionThreshold.value = String(record.messageThreshold)
+      if (typeof record.messageThreshold === 'number' && Number.isSafeInteger(record.messageThreshold)) {
+        compactionThreshold.value = String(record.messageThreshold)
+        legacyCompactionSnapshot.value = {
+          enabled: typeof record.enabled === 'boolean' ? record.enabled : true,
+          messageThreshold: record.messageThreshold >= 12 && record.messageThreshold <= 10_000
+            ? record.messageThreshold
+            : DEFAULT_COMPACTION_SETTINGS.messageThreshold,
+        }
+      }
     }
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки сжатия.'
@@ -218,6 +307,7 @@ onMounted(async () => {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
   await Promise.all([loadSession(), loadSessions()])
+  await importLegacyCompactionSettings()
 })
 
 watch(costSettings, value => {
@@ -286,12 +376,14 @@ watch(sessionId, () => {
       v-model:detailed-statistics="detailedStatistics"
       v-model:compaction-enabled="compactionEnabled"
       v-model:compaction-threshold="compactionThreshold"
+      v-model:context-strategy="contextStrategy"
       :default-model="defaultModel"
       :loading="listLoading"
       :disabled="workspaceBusy || Boolean(deletingId)"
       :has-more="Boolean(nextCursor)"
       @select="handleSelect"
       @update:model-value="handleModelChange"
+      @save-settings="handleSettingsSave"
       @new-session="handleNewSession"
       @delete-session="handleDelete"
       @load-more="loadSessions(true)"
@@ -306,11 +398,13 @@ watch(sessionId, () => {
       :show-detailed-statistics="detailedStatistics"
       :compaction-enabled="compactionEnabled"
       :compaction-threshold="compactionThreshold"
+      :context-strategy="contextStrategy"
       :operation-error="operationError"
       @new-session="handleNewSession"
       @updated="handleUpdated"
       @busy-change="workspaceBusy = $event"
       @dismiss-operation-error="operationError = null"
+      @create-branch="handleCreateBranch"
     />
   </div>
 </template>

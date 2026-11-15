@@ -78,6 +78,70 @@ afterEach(async () => {
 })
 
 describe('prepareSessionContext', () => {
+  it('isolates Off and Sliding Window from an existing Summary checkpoint', async () => {
+    const { db, session, turn } = await createHistory()
+    const model = new MockLanguageModelV3({ doGenerate: [textResult('Старая сводка')] })
+    await prepareSessionContext({
+      db,
+      sessionId: session.id,
+      turnId: turn.turnId,
+      model,
+      modelId: 'mock-model',
+      settings: { enabled: true, messageThreshold: 12, contextWindowTokens: 100_000 },
+      promptOverheadTokens: 0,
+    })
+
+    const off = await prepareSessionContext({
+      db,
+      sessionId: session.id,
+      turnId: turn.turnId,
+      model,
+      modelId: 'mock-model',
+      settings: { enabled: false, messageThreshold: 20, contextWindowTokens: 100_000 },
+      contextStrategy: { strategy: 'off', windowSize: 10, messageThreshold: 20 },
+      promptOverheadTokens: 0,
+    })
+    const sliding = await prepareSessionContext({
+      db,
+      sessionId: session.id,
+      turnId: turn.turnId,
+      model,
+      modelId: 'mock-model',
+      settings: { enabled: false, messageThreshold: 20, contextWindowTokens: 100_000 },
+      contextStrategy: { strategy: 'sliding_window', windowSize: 10, messageThreshold: 20 },
+      promptOverheadTokens: 0,
+    })
+
+    expect(off.modelMessages).toHaveLength(20)
+    expect(off.modelMessages.some(message => message.parts.some(part => part.type === 'text' && part.text.includes('Старая сводка')))).toBe(false)
+    expect(sliding.modelMessages).toHaveLength(10)
+    expect(sliding.modelMessages.at(0)?.parts[0]).toMatchObject({ text: 'message 10' })
+    db.close()
+  })
+
+  it('builds Sticky Facts from user messages and sends facts plus the window', async () => {
+    const { db, session, turn } = await createHistory(6)
+    const model = new MockLanguageModelV3({
+      doGenerate: Array.from({ length: 3 }, (_, index) => textResult(JSON.stringify({ [`fact${index}`]: `value${index}` }))),
+    })
+    const prepared = await prepareSessionContext({
+      db,
+      sessionId: session.id,
+      turnId: turn.turnId,
+      model,
+      modelId: 'mock-model',
+      settings: { enabled: false, messageThreshold: 20, contextWindowTokens: 100_000 },
+      contextStrategy: { strategy: 'sticky_facts', windowSize: 4, messageThreshold: 20 },
+      promptOverheadTokens: 0,
+    })
+
+    expect(prepared.modelMessages[0]?.parts[0]).toMatchObject({ type: 'text', text: expect.stringContaining('Sticky facts') })
+    expect(prepared.modelMessages).toHaveLength(5)
+    const updates = db.prepare('SELECT COUNT(*) AS count FROM facts_updates WHERE session_id = ?').get(session.id) as { count: number }
+    expect(updates.count).toBe(3)
+    db.close()
+  })
+
   it('creates a checkpoint and keeps the full original history separate from model messages', async () => {
     const { db, sessions, session, turn } = await createHistory()
     const model = new MockLanguageModelV3({ doGenerate: [textResult('Сводка первых сообщений')] })

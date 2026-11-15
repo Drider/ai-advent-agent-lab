@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import type { ChatCostSettings, SessionSummary } from '~/shared/chat'
+import { computed, shallowRef } from 'vue'
+import ChatSettingsModal from '~/components/ChatSettingsModal.vue'
+import type { ChatCostSettings, ChatContextStrategySettings, SessionSummary } from '~/shared/chat'
 
 const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
 const detailedStatistics = defineModel<boolean>('detailedStatistics', { default: false })
 const compactionEnabled = defineModel<boolean>('compactionEnabled', { required: true })
 const compactionThreshold = defineModel<string>('compactionThreshold', { required: true })
+const contextStrategy = defineModel<ChatContextStrategySettings>('contextStrategy', { required: true })
+const settingsOpen = shallowRef(false)
 
 const props = defineProps<{
   items: SessionSummary[]
@@ -28,6 +32,7 @@ const emit = defineEmits<{
   deleteSession: [sessionId: string]
   'update:modelValue': [value: string]
   'update:contextLimit': [value: string]
+  saveSettings: [payload: { modelId: string; contextLimit: string; contextStrategy: ChatContextStrategySettings; costSettings: ChatCostSettings; detailedStatistics: boolean }]
 }>()
 
 function statusLabel(status: SessionSummary['status']): string {
@@ -50,31 +55,45 @@ function statusLabel(status: SessionSummary['status']): string {
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value))
 }
+
+const strategyLabel = computed(() => {
+  switch (contextStrategy.value.strategy) {
+    case 'sliding_window': return `Sliding Window · ${contextStrategy.value.windowSize}`
+    case 'sticky_facts': return `Sticky Facts · ${contextStrategy.value.windowSize}`
+    case 'off': return 'Выключено'
+    default: return `Summary · ${contextStrategy.value.messageThreshold}`
+  }
+})
+
+function handleSettingsSave(payload: { modelId: string; contextLimit: string; contextStrategy: ChatContextStrategySettings; costSettings: ChatCostSettings; detailedStatistics: boolean }): void {
+  emit('saveSettings', payload)
+  settingsOpen.value = false
+}
 </script>
 
 <template>
   <aside class="session-sidebar" aria-label="Сессии чата">
-    <ModelSettings
-      :model-value="props.modelValue"
+    <section class="chat-settings-summary" aria-label="Текущие настройки">
+      <div class="chat-settings-summary__line"><span>Модель</span><strong :title="props.modelValue">{{ props.modelValue }}</strong></div>
+      <div class="chat-settings-summary__line"><span>Окно</span><strong>{{ props.contextLimit || 'не задано' }}</strong></div>
+      <div class="chat-settings-summary__line"><span>Контекст</span><strong>{{ strategyLabel }}</strong></div>
+      <div class="chat-settings-summary__line"><span>Стоимость</span><strong>{{ costSettings.enabled ? 'включена' : 'выключена' }}</strong></div>
+      <div class="chat-settings-summary__line"><span>Статистика</span><strong>{{ detailedStatistics ? 'подробная' : 'обычная' }}</strong></div>
+      <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-settings-2" block @click="settingsOpen = true">Настройки</UButton>
+      <p v-if="props.modelSaveError" class="chat-settings-summary__error" role="alert">{{ props.modelSaveError }}</p>
+    </section>
+    <ChatSettingsModal
+      :open="settingsOpen"
+      :model-id="props.modelValue"
       :context-limit="props.contextLimit"
       :default-model="props.defaultModel"
+      :context-strategy="contextStrategy"
+      :cost-settings="costSettings"
+      :detailed-statistics="detailedStatistics"
       :save-error="props.modelSaveError"
-      :compaction-enabled="compactionEnabled"
-      :compaction-threshold="compactionThreshold"
-      @update:model-value="emit('update:modelValue', $event)"
-      @update:context-limit="emit('update:contextLimit', $event)"
-      @update:compaction-enabled="compactionEnabled = $event"
-      @update:compaction-threshold="compactionThreshold = $event"
+      @cancel="settingsOpen = false"
+      @save="handleSettingsSave"
     />
-    <ChatCostSettings v-model="costSettings" />
-
-    <section class="chat-token-settings" aria-label="Настройки статистики токенов">
-      <label class="chat-token-settings__toggle">
-        <input v-model="detailedStatistics" type="checkbox" aria-describedby="token-statistics-hint">
-        <span>Подробная статистика токенов</span>
-      </label>
-      <p id="token-statistics-hint">Кэш, размышления и расход по обращениям к модели.</p>
-    </section>
 
     <div class="session-sidebar__header">
       <div>
@@ -159,34 +178,36 @@ function formatDate(value: string): string {
 </template>
 
 <style scoped>
-.chat-token-settings {
+.chat-settings-summary {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.55rem;
   border-bottom: 1px solid #e2e8f0;
   padding: 0.1rem 0.25rem 1rem;
 }
 
-.chat-token-settings__toggle {
+.chat-settings-summary__line {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  color: #334155;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.chat-token-settings__toggle input {
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 auto;
-  accent-color: #2563eb;
-}
-
-.chat-token-settings p {
-  margin: 0;
+  justify-content: space-between;
+  gap: .7rem;
   color: #64748b;
-  font-size: 0.75rem;
-  line-height: 1.4;
+  font-size: .74rem;
+}
+
+.chat-settings-summary__line strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: .75rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-settings-summary__error {
+  margin: 0;
+  color: #b42318;
+  font-size: .74rem;
+  line-height: 1.35;
 }
 </style>

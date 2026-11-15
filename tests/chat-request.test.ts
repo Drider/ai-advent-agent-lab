@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CHAT_MODEL,
   DEFAULT_COMPACTION_SETTINGS,
+  DEFAULT_CONTEXT_STRATEGY_SETTINGS,
   buildChatCompactionSettings,
   validateChatRequest,
   validateCompactionSettings,
+  validateContextStrategySettings,
   validateModelId,
 } from '../shared/chat'
 
@@ -30,6 +32,28 @@ describe('validateModelId', () => {
 
   it('trims surrounding whitespace from a model ID', () => {
     expect(validateModelId(' qwen/qwen3.5-9b ')).toBe('qwen/qwen3.5-9b')
+  })
+})
+
+describe('context strategy settings', () => {
+  it('accepts all modes and keeps their independent parameters', () => {
+    expect(DEFAULT_CONTEXT_STRATEGY_SETTINGS).toMatchObject({
+      strategy: 'summary',
+      windowSize: 10,
+      messageThreshold: 20,
+    })
+    expect(validateContextStrategySettings({ strategy: 'off', windowSize: 12, messageThreshold: 30 })).toEqual({
+      strategy: 'off', windowSize: 12, messageThreshold: 30,
+    })
+    expect(validateContextStrategySettings({ strategy: 'sliding_window', windowSize: 8, messageThreshold: 30 }).strategy).toBe('sliding_window')
+    expect(validateContextStrategySettings({ strategy: 'sticky_facts', windowSize: 8, messageThreshold: 30 }).windowSize).toBe(8)
+    expect(validateContextStrategySettings({ strategy: 'summary', windowSize: 10, messageThreshold: 12 }).messageThreshold).toBe(12)
+  })
+
+  it('rejects invalid strategy parameters', () => {
+    expect(() => validateContextStrategySettings({ strategy: 'unknown', windowSize: 10, messageThreshold: 20 })).toThrow()
+    expect(() => validateContextStrategySettings({ strategy: 'sliding_window', windowSize: 0, messageThreshold: 20 })).toThrow()
+    expect(() => validateContextStrategySettings({ strategy: 'summary', windowSize: 10, messageThreshold: 11 })).toThrow()
   })
 })
 

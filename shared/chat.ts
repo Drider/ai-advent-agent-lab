@@ -148,6 +148,15 @@ export interface SessionSummary {
   lastOpenedAt?: string
   status: ChatSessionStatus
   revision: number
+  parentSessionId?: string
+  branchSourceMessageId?: string
+}
+
+export interface SessionBranchLink {
+  id: string
+  title: string
+  branchSourceMessageId?: string
+  updatedAt: string
 }
 
 export interface SessionTurnSummary {
@@ -185,10 +194,28 @@ export interface CompactionAttemptView {
   finishedAt?: string
 }
 
+export interface StickyFactsUpdateView {
+  id: string
+  sessionId: string
+  sourceMessageId: string
+  throughMessagePosition: number
+  facts: Record<string, string>
+  usage?: ChatTokenUsage
+  costRub?: ChatCostRub
+  status: 'completed' | 'failed'
+  error?: string
+  createdAt: string
+}
+
 export interface SessionDetail extends SessionSummary {
   messages: ChatUIMessage[]
   lastTurn: SessionTurnSummary | null
   modelId: string | null
+  contextStrategy: ChatContextStrategySettings
+  stickyFacts: Record<string, string>
+  factsUpdates: StickyFactsUpdateView[]
+  parent?: SessionBranchLink
+  children: SessionBranchLink[]
   compactionAttempts: CompactionAttemptView[]
 }
 
@@ -200,6 +227,44 @@ export interface ChatCompactionSettings {
   enabled: boolean
   messageThreshold: number
   contextWindowTokens?: number
+}
+
+export type ChatContextStrategy = 'off' | 'summary' | 'sliding_window' | 'sticky_facts'
+
+export interface ChatContextStrategySettings {
+  strategy: ChatContextStrategy
+  windowSize: number
+  messageThreshold: number
+}
+
+export const DEFAULT_CONTEXT_STRATEGY_SETTINGS: ChatContextStrategySettings = {
+  strategy: 'summary',
+  windowSize: 10,
+  messageThreshold: 20,
+}
+
+const MIN_CONTEXT_WINDOW_MESSAGES = 1
+const MAX_CONTEXT_WINDOW_MESSAGES = 10_000
+
+export function validateContextStrategySettings(input: unknown): ChatContextStrategySettings {
+  if (!isRecord(input)
+    || !['off', 'summary', 'sliding_window', 'sticky_facts'].includes(input.strategy as string)
+    || typeof input.windowSize !== 'number'
+    || !Number.isSafeInteger(input.windowSize)
+    || input.windowSize < MIN_CONTEXT_WINDOW_MESSAGES
+    || input.windowSize > MAX_CONTEXT_WINDOW_MESSAGES
+    || typeof input.messageThreshold !== 'number'
+    || !Number.isSafeInteger(input.messageThreshold)
+    || input.messageThreshold < MIN_COMPACTION_MESSAGE_THRESHOLD
+    || input.messageThreshold > MAX_COMPACTION_MESSAGE_THRESHOLD) {
+    throw new Error('context strategy must contain a valid strategy, windowSize from 1 to 10000, and messageThreshold from 12 to 10000')
+  }
+
+  return {
+    strategy: input.strategy as ChatContextStrategy,
+    windowSize: input.windowSize,
+    messageThreshold: input.messageThreshold,
+  }
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: ChatCompactionSettings = {
@@ -242,6 +307,7 @@ export type ChatRequestBody =
       model?: string
       pricing?: ChatPricing
       compaction?: ChatCompactionSettings
+      contextStrategy?: ChatContextStrategySettings
       message: UIMessage
     }
   | {
@@ -253,6 +319,7 @@ export type ChatRequestBody =
       model?: string
       pricing?: ChatPricing
       compaction?: ChatCompactionSettings
+      contextStrategy?: ChatContextStrategySettings
     }
 
 export function validateCompactionSettings(input: unknown): ChatCompactionSettings {
@@ -369,6 +436,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
   const model = input.model === undefined ? undefined : validateModelId(input.model)
   const pricing = validatePricing(input.pricing)
   const compaction = input.compaction === undefined ? undefined : validateCompactionSettings(input.compaction)
+  const contextStrategy = input.contextStrategy === undefined ? undefined : validateContextStrategySettings(input.contextStrategy)
 
   if (!isUIMessageLike(input.message)) {
     throw new Error('messages must contain valid UIMessage entries')
@@ -398,6 +466,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
       ...(model === undefined ? {} : { model }),
       ...(pricing === undefined ? {} : { pricing }),
       ...(compaction === undefined ? {} : { compaction }),
+      ...(contextStrategy === undefined ? {} : { contextStrategy }),
     }
   }
 
@@ -409,5 +478,6 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
     ...(model === undefined ? {} : { model }),
     ...(pricing === undefined ? {} : { pricing }),
     ...(compaction === undefined ? {} : { compaction }),
+    ...(contextStrategy === undefined ? {} : { contextStrategy }),
   }
 }

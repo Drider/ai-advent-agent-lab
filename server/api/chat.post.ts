@@ -54,8 +54,14 @@ export default defineEventHandler(async (event) => {
   if (!session) {
     throw createError({ statusCode: 404, statusMessage: 'Session not found' })
   }
-  const compactionSettings = request.compaction ?? { enabled: true, messageThreshold: 20 }
-  const agentConfig = getAgentConfig(compactionSettings)
+  const contextStrategy = request.contextStrategy ?? session.contextStrategy
+  const legacyCompaction = request.compaction ?? { enabled: true, messageThreshold: contextStrategy.messageThreshold }
+  const compactionSettings = {
+    ...legacyCompaction,
+    enabled: contextStrategy.strategy === 'summary' && legacyCompaction.enabled,
+    messageThreshold: contextStrategy.messageThreshold,
+  }
+  const agentConfig = getAgentConfig(compactionSettings, contextStrategy)
   const model = provider.chat(chatConfig.modelId)
   let turnId: string
   try {
@@ -114,6 +120,7 @@ export default defineEventHandler(async (event) => {
       model,
       modelId: chatConfig.modelId,
       settings: compactionSettings,
+      contextStrategy,
       pricing: request.pricing,
       promptOverheadTokens,
       abortSignal: event.web?.request?.signal,

@@ -3,7 +3,7 @@ import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
-import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
+import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 
 const props = defineProps<{
   session: SessionDetail
@@ -11,6 +11,7 @@ const props = defineProps<{
   contextLimit: string
   compactionEnabled: boolean
   compactionThreshold: string
+  contextStrategy: ChatContextStrategySettings
   pricing?: ChatPricing
   showCost: boolean
   showDetailedStatistics?: boolean
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   updated: []
   busyChange: [busy: boolean]
   dismissOperationError: []
+  createBranch: [messageId: string]
 }>()
 
 const draft = shallowRef('')
@@ -35,8 +37,8 @@ const markdownPlugins = [math()]
 
 function getCompactionSettings(): ChatCompactionSettings {
   return buildChatCompactionSettings({
-    enabled: props.compactionEnabled,
-    messageThreshold: props.compactionThreshold,
+    enabled: props.contextStrategy.strategy === 'summary' && props.compactionEnabled,
+    messageThreshold: props.contextStrategy.messageThreshold,
     contextWindowTokens: props.contextLimit,
   })
 }
@@ -68,6 +70,7 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
         compaction: getCompactionSettings(),
+        contextStrategy: props.contextStrategy,
       } satisfies ChatRequestBody,
     }
   },
@@ -96,6 +99,7 @@ const {
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
 const dialogueTotals = computed(() => dialogueCostTotals(messages.value, props.session.compactionAttempts))
+const stickyFactsMaintenanceTokens = computed(() => props.session.factsUpdates.reduce((total, update) => total + (update.usage?.totalTokens ?? 0), 0))
 const compactionAttemptsByUserMessage = computed(() => {
   const grouped = new Map<string, SessionDetail['compactionAttempts']>()
   for (const attempt of props.session.compactionAttempts) {
@@ -203,6 +207,7 @@ async function handleContinue(): Promise<void> {
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
         compaction: getCompactionSettings(),
+        contextStrategy: props.contextStrategy,
       } satisfies Omit<Extract<ChatRequestBody, { kind: 'continue' }>, 'message'>,
     })
   } catch (caughtError) {
@@ -270,6 +275,23 @@ function dismissError(): void {
       </div>
     </header>
 
+    <details v-if="props.contextStrategy.strategy === 'sticky_facts' && Object.keys(props.session.stickyFacts).length > 0" class="sticky-facts-panel">
+      <summary>Sticky Facts · {{ Object.keys(props.session.stickyFacts).length }} фактов</summary>
+      <p class="sticky-facts-panel__meta">Обновлений: {{ props.session.factsUpdates.length }} · maintenance-токены: {{ tokenFormatter.format(stickyFactsMaintenanceTokens) }}</p>
+      <dl>
+        <template v-for="(value, key) in props.session.stickyFacts" :key="key">
+          <dt>{{ key }}</dt>
+          <dd>{{ value }}</dd>
+        </template>
+      </dl>
+    </details>
+
+    <nav v-if="props.session.parent || props.session.children.length > 0" class="branch-navigation" aria-label="Ветки диалога">
+      <span class="branch-navigation__label"><UIcon name="i-lucide-git-branch" aria-hidden="true" /> Ветки</span>
+      <button v-if="props.session.parent" type="button" @click="navigateTo(`/chat/${props.session.parent.id}`)">Исходный диалог</button>
+      <button v-for="child in props.session.children" :key="child.id" type="button" :class="{ 'branch-navigation__current': child.id === props.session.id }" @click="navigateTo(`/chat/${child.id}`)">{{ child.title }}</button>
+    </nav>
+
     <ChatInterruptionNotice
       v-if="isStopped || needsReview"
       :status="lastTurnStatus"
@@ -300,6 +322,16 @@ function dismissError(): void {
             :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
+          <button
+            v-if="message.role === 'assistant' && !isBusy"
+            type="button"
+            class="branch-message-button"
+            title="Создать ветку из этого ответа"
+            @click="emit('createBranch', message.id)"
+          >
+            <UIcon name="i-lucide-git-branch" aria-hidden="true" />
+            <span>Ветка</span>
+          </button>
           <details
             v-for="attempt in compactionAttemptsByUserMessage.get(message.id) ?? []"
             :key="attempt.id"
@@ -333,6 +365,51 @@ function dismissError(): void {
 </template>
 
 <style scoped>
+.sticky-facts-panel {
+  margin: 0 1.25rem .75rem;
+  border: 1px solid #dbe4ef;
+  border-radius: .65rem;
+  padding: .6rem .75rem;
+  color: #475569;
+  background: #f8fafc;
+  font-size: .78rem;
+}
+
+.branch-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .35rem;
+  margin: 0 1.25rem .75rem;
+  color: #64748b;
+  font-size: .74rem;
+}
+
+.branch-navigation__label { display: inline-flex; align-items: center; gap: .25rem; font-weight: 600; }
+.branch-navigation button { border: 0; border-radius: .35rem; padding: .25rem .4rem; color: #475569; background: #f1f5f9; font: inherit; cursor: pointer; }
+.branch-navigation button:hover, .branch-navigation__current { color: #1e293b; background: #e2e8f0; }
+
+.sticky-facts-panel summary { cursor: pointer; font-weight: 600; }
+.sticky-facts-panel dl { display: grid; grid-template-columns: minmax(7rem, .4fr) 1fr; gap: .35rem .7rem; margin: .7rem 0 .1rem; }
+.sticky-facts-panel dt { color: #64748b; font-weight: 600; }
+.sticky-facts-panel dd { margin: 0; color: #334155; }
+
+.branch-message-button {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  margin-top: .55rem;
+  border: 0;
+  padding: .2rem .35rem;
+  color: #64748b;
+  background: transparent;
+  font: inherit;
+  font-size: .72rem;
+  cursor: pointer;
+}
+
+.branch-message-button:hover { color: #1e293b; background: #f1f5f9; }
+
 .compaction-attempt {
   margin-top: 0.5rem;
   border-left: 2px solid #cbd5e1;

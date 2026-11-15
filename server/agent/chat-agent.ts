@@ -10,7 +10,7 @@ import {
   type TextStreamPart,
   type UIMessage,
 } from 'ai'
-import { calculateChatCost, DEFAULT_COMPACTION_SETTINGS, stopReasonMessage, type ChatCompactionSettings, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
+import { calculateChatCost, DEFAULT_COMPACTION_SETTINGS, stopReasonMessage, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
 import { appendRunLogEntry, type RunLogEntry, type RunLogLevel, type RunLogStatus } from '../utils/run-logger'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createFileTools, type FileTools } from '../tools/files'
@@ -42,7 +42,7 @@ const AGENT_INSTRUCTIONS = [
 const FINAL_STEP_INSTRUCTIONS = 'Finish the current response using the results already available. Do not call more tools. If the user\'s request is not fully complete, clearly say what remains to be done so it can be continued later.'
 const AGENT_INSTRUCTIONS_HASH = createHash('sha256').update(AGENT_INSTRUCTIONS).digest('hex')
 
-export function getAgentConfig(contextCompaction: ChatCompactionSettings = DEFAULT_COMPACTION_SETTINGS): Record<string, unknown> {
+export function getAgentConfig(contextCompaction: ChatCompactionSettings = DEFAULT_COMPACTION_SETTINGS, contextStrategy?: ChatContextStrategySettings): Record<string, unknown> {
   return {
     version: 2,
     instructions: AGENT_INSTRUCTIONS,
@@ -50,6 +50,7 @@ export function getAgentConfig(contextCompaction: ChatCompactionSettings = DEFAU
     finalStepInstructions: FINAL_STEP_INSTRUCTIONS,
     toolSetVersion: 1,
     contextCompaction: { ...contextCompaction },
+    ...(contextStrategy === undefined ? {} : { contextStrategy: { ...contextStrategy } }),
     limits: {
       maxSteps: MAX_AGENT_STEPS,
       timeoutMs: AGENT_TIMEOUT_MS,

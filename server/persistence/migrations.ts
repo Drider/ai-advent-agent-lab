@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 
-export const CHAT_SCHEMA_VERSION = 5
+export const CHAT_SCHEMA_VERSION = 8
 
 export function migrateChatDatabase(db: Database.Database): void {
   const currentVersion = Number(db.pragma('user_version', { simple: true }))
@@ -144,6 +144,38 @@ export function migrateChatDatabase(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS compaction_attempts_session_started_idx
         ON compaction_attempts (session_id, started_at ASC);
     `)
+    if (currentVersion < 6 && !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'context_strategy_json'").get()) {
+      db.exec(`
+        ALTER TABLE sessions
+        ADD COLUMN context_strategy_json TEXT NOT NULL
+          DEFAULT '{"strategy":"summary","windowSize":10,"messageThreshold":20}'
+          CHECK (json_valid(context_strategy_json));
+      `)
+    }
+    if (currentVersion < 7) db.exec(`
+      CREATE TABLE IF NOT EXISTS facts_updates (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        source_message_id TEXT NOT NULL,
+        through_message_position INTEGER NOT NULL CHECK (through_message_position >= 0),
+        facts_json TEXT NOT NULL CHECK (json_valid(facts_json)),
+        usage_json TEXT CHECK (usage_json IS NULL OR json_valid(usage_json)),
+        cost_json TEXT CHECK (cost_json IS NULL OR json_valid(cost_json)),
+        status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+        error TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (session_id, source_message_id)
+      );
+      CREATE INDEX IF NOT EXISTS facts_updates_session_position_idx
+        ON facts_updates (session_id, through_message_position DESC);
+    `)
+    if (currentVersion < 8 && !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'").get()) {
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL;
+        ALTER TABLE sessions ADD COLUMN branch_source_message_id TEXT;
+        CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions (parent_session_id);
+      `)
+    }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
   } catch (error) {
