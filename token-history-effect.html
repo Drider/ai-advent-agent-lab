@@ -1,0 +1,63 @@
+<div id="token-history-effect">
+  <style>
+    #token-history-effect { color: var(--foreground); display: grid; gap: 1.2rem; }
+    #token-history-effect .th-row { display: grid; gap: .45rem; }
+    #token-history-effect .th-label { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem 1rem; }
+    #token-history-effect .th-blocks { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
+    #token-history-effect .th-message { display: grid; place-items: center; padding: .6rem .75rem; min-width: 2.7rem; gap: .15rem; color: var(--foreground); background: color-mix(in srgb, var(--viz-series-1) 18%, transparent); }
+    #token-history-effect .th-new { background: color-mix(in srgb, var(--viz-series-2) 24%, transparent); }
+    #token-history-effect .th-response { background: color-mix(in srgb, var(--viz-series-3) 20%, transparent); }
+    #token-history-effect .th-output { display: flex; align-items: center; gap: .4rem; }
+    #token-history-effect .th-legend { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; }
+    #token-history-effect .th-key { display: inline-flex; align-items: center; gap: .4rem; }
+    #token-history-effect .th-swatch { width: .7rem; height: .7rem; background: var(--viz-series-1); }
+    #token-history-effect .th-summary { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; }
+  </style>
+  <h3>Одна история — несколько отправок</h3>
+  <div class="text-muted text-small">Условный пример: каждый вопрос и каждый ответ — 100 токенов</div>
+  <div class="th-legend text-small">
+    <span class="th-key"><span class="th-swatch"></span>Предыдущие сообщения</span>
+    <span class="th-key"><span class="th-swatch" style="background:var(--viz-series-2)"></span>Новый вопрос</span>
+    <span class="th-key"><span class="th-swatch" style="background:var(--viz-series-3)"></span>Новый ответ</span>
+  </div>
+  <div class="th-row">
+    <div class="th-label"><strong>Запрос 1</strong><span>Вход 100 · выход 100 · расход 200</span></div>
+    <div class="th-blocks" role="img" aria-label="Первый запрос: вопрос 1 на входе, ответ 1 на выходе">
+      <span class="th-message th-new">В1<span class="text-small">100</span></span>
+      <span class="th-output"><span aria-hidden="true">→</span><span class="th-message th-response">О1<span class="text-small">100</span></span></span>
+    </div>
+  </div>
+  <div class="th-row">
+    <div class="th-label"><strong>Запрос 2</strong><span>Вход 300 · выход 100 · расход 400</span></div>
+    <div class="th-blocks" role="img" aria-label="Второй запрос: вопрос 1 и ответ 1 отправлены снова, добавлен вопрос 2; на выходе ответ 2">
+      <span class="th-message">В1<span class="text-small">100</span></span>
+      <span class="th-message">О1<span class="text-small">100</span></span>
+      <span class="th-message th-new">В2<span class="text-small">100</span></span>
+      <span class="th-output"><span aria-hidden="true">→</span><span class="th-message th-response">О2<span class="text-small">100</span></span></span>
+    </div>
+  </div>
+  <div class="th-row">
+    <div class="th-label"><strong>Запрос 3</strong><span>Вход 500 · выход 100 · расход 600</span></div>
+    <div class="th-blocks" role="img" aria-label="Третий запрос: все четыре старых сообщения отправлены снова, добавлен вопрос 3; на выходе ответ 3">
+      <span class="th-message">В1<span class="text-small">100</span></span>
+      <span class="th-message">О1<span class="text-small">100</span></span>
+      <span class="th-message">В2<span class="text-small">100</span></span>
+      <span class="th-message">О2<span class="text-small">100</span></span>
+      <span class="th-message th-new">В3<span class="text-small">100</span></span>
+      <span class="th-output"><span aria-hidden="true">→</span><span class="th-message th-response">О3<span class="text-small">100</span></span></span>
+    </div>
+  </div>
+  <hr>
+  <div class="th-row">
+    <strong>Сохранённый чат после трёх ответов</strong>
+    <div class="th-blocks" role="img" aria-label="В истории шесть сообщений: каждый из трёх вопросов и ответов сохранён один раз, всего 600 токенов">
+      <span class="th-message">В1<span class="text-small">100</span></span>
+      <span class="th-message">О1<span class="text-small">100</span></span>
+      <span class="th-message">В2<span class="text-small">100</span></span>
+      <span class="th-message">О2<span class="text-small">100</span></span>
+      <span class="th-message">В3<span class="text-small">100</span></span>
+      <span class="th-message">О3<span class="text-small">100</span></span>
+    </div>
+    <div class="th-summary"><span>Объём истории: <strong>600 токенов</strong></span><span>Накопленный расход: <strong>1 200 токенов</strong></span></div>
+  </div>
+</div>

@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-11-15T13:27:00.793Z",
+  "baseUrl": "http://127.0.0.1:4311",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "windowSize": 10,
+  "results": [
+    {
+      "strategy": "sliding_window",
+      "sessionId": "dabb05f5-5cec-4a26-947a-b9a37f7871e5",
+      "remembered": [
+        false,
+        false,
+        false,
+        true,
+        true
+      ],
+      "rememberedCount": 2,
+      "usage": {
+        "input": 74201,
+        "output": 1914,
+        "total": 76115
+      },
+      "agentCalls": 15,
+      "maintenanceCalls": 0
+    },
+    {
+      "strategy": "sticky_facts",
+      "sessionId": "1a54ee4b-517a-4ad8-8d77-226337e7caa7",
+      "remembered": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "rememberedCount": 5,
+      "usage": {
+        "input": 83190,
+        "output": 4857,
+        "total": 88047
+      },
+      "agentCalls": 15,
+      "maintenanceCalls": 15
+    },
+    {
+      "strategy": "summary",
+      "sessionId": "9b92435c-bc05-4f43-a052-351c0fb820ac",
+      "remembered": [
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "rememberedCount": 5,
+      "usage": {
+        "input": 54646,
+        "output": 1267,
+        "total": 55913
+      },
+      "agentCalls": 15,
+      "maintenanceCalls": 1
+    }
+  ]
+}
