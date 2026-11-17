@@ -50,6 +50,13 @@ describe('chat database backup', () => {
     await expect(createSessionRepository(backupDb).getSession(session.id)).resolves.toMatchObject({
       messages: [message],
     })
+    expect(backupDb.prepare('SELECT working_tokens, long_term_tokens FROM memory_settings WHERE id = 1').get()).toEqual({
+      working_tokens: 2000,
+      long_term_tokens: 2000,
+    })
+    expect(backupDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get()).toEqual({
+      name: 'projects',
+    })
     expect(() => sessions.createSession()).not.toThrow()
     backupDb.close()
     sourceDb.close()

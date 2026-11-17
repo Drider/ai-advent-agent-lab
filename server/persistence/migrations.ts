@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 
-export const CHAT_SCHEMA_VERSION = 8
+export const CHAT_SCHEMA_VERSION = 9
 
 export function migrateChatDatabase(db: Database.Database): void {
   const currentVersion = Number(db.pragma('user_version', { simple: true }))
@@ -176,6 +176,117 @@ export function migrateChatDatabase(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions (parent_session_id);
       `)
     }
+    if (currentVersion < 9 && !db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id'").get()) {
+      db.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL')
+    }
+    if (currentVersion < 9) db.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS working_memory_entries (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        category TEXT NOT NULL CHECK (category IN ('goal', 'constraint', 'state', 'result', 'note')),
+        memory_key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS working_memory_project_idx
+        ON working_memory_entries (project_id, enabled, category, memory_key, id);
+
+      CREATE TABLE IF NOT EXISTS long_term_facts (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL CHECK (category IN ('profile', 'decision', 'knowledge')),
+        memory_key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        global_enabled INTEGER NOT NULL DEFAULT 0 CHECK (global_enabled IN (0, 1)),
+        source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS long_term_facts_enabled_idx
+        ON long_term_facts (enabled, global_enabled, category, memory_key, id);
+
+      CREATE TABLE IF NOT EXISTS project_long_term_facts (
+        fact_id TEXT NOT NULL REFERENCES long_term_facts(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (fact_id, project_id)
+      );
+      CREATE INDEX IF NOT EXISTS project_long_term_facts_project_idx
+        ON project_long_term_facts (project_id, fact_id);
+
+      CREATE TABLE IF NOT EXISTS memory_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        working_tokens INTEGER NOT NULL CHECK (working_tokens BETWEEN 100 AND 100000),
+        long_term_tokens INTEGER NOT NULL CHECK (long_term_tokens BETWEEN 100 AND 100000),
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        updated_at TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO memory_settings (id, working_tokens, long_term_tokens, revision, updated_at)
+      VALUES (1, 2000, 2000, 0, datetime('now'));
+
+      CREATE TABLE IF NOT EXISTS memory_usage_events (
+        id TEXT PRIMARY KEY,
+        snapshot_id TEXT NOT NULL UNIQUE,
+        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        prepared_at TEXT NOT NULL,
+        context_cleared INTEGER NOT NULL DEFAULT 0 CHECK (context_cleared IN (0, 1)),
+        short_term_count INTEGER NOT NULL CHECK (short_term_count >= 0),
+        short_term_bytes INTEGER NOT NULL CHECK (short_term_bytes >= 0),
+        short_term_tokens INTEGER NOT NULL CHECK (short_term_tokens >= 0),
+        working_count INTEGER NOT NULL CHECK (working_count >= 0),
+        working_bytes INTEGER NOT NULL CHECK (working_bytes >= 0),
+        working_tokens INTEGER NOT NULL CHECK (working_tokens >= 0),
+        long_term_count INTEGER NOT NULL CHECK (long_term_count >= 0),
+        long_term_bytes INTEGER NOT NULL CHECK (long_term_bytes >= 0),
+        long_term_tokens INTEGER NOT NULL CHECK (long_term_tokens >= 0),
+        working_refs_json TEXT NOT NULL CHECK (json_valid(working_refs_json)),
+        long_term_refs_json TEXT NOT NULL CHECK (json_valid(long_term_refs_json))
+      );
+      CREATE INDEX IF NOT EXISTS memory_usage_events_scope_idx
+        ON memory_usage_events (session_id, project_id, prepared_at DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS history_clear_operations (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        old_run_log_id TEXT NOT NULL,
+        new_run_log_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending_files', 'completed', 'failed')),
+        error TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS history_clear_pending_session_idx
+        ON history_clear_operations (session_id) WHERE status = 'pending_files';
+
+      CREATE TABLE IF NOT EXISTS cleared_requests (
+        request_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        cleared_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cleared_tool_calls (
+        tool_call_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        cleared_at TEXT NOT NULL
+      );
+    `)
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
   } catch (error) {
