@@ -24,6 +24,7 @@ const emit = defineEmits<{
   busyChange: [busy: boolean]
   dismissOperationError: []
   createBranch: [messageId: string]
+  saveMemory: [payload: { text: string; source: { sourceSessionId: string; sourceMessageId: string } }]
 }>()
 
 const draft = shallowRef('')
@@ -34,6 +35,13 @@ const continuationError = shallowRef<string | null>(null)
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
+
+function getMessageText(message: ChatUIMessage): string {
+  return message.parts
+    .filter((part): part is Extract<ChatUIMessage['parts'][number], { type: 'text' }> => part.type === 'text')
+    .map(part => part.text)
+    .join('')
+}
 
 function getCompactionSettings(): ChatCompactionSettings {
   return buildChatCompactionSettings({
@@ -268,6 +276,7 @@ function dismissError(): void {
         </div>
       </div>
       <div class="chat-header__actions">
+        <UButton color="neutral" variant="soft" icon="i-lucide-brain" :to="{ path: '/memory', query: { sessionId: props.session.id, ...(props.session.projectId ? { projectId: props.session.projectId } : {}) } }">Память</UButton>
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
         <UButton class="chat-new-session" color="neutral" variant="soft" icon="i-lucide-square-pen" aria-label="Новая сессия" :disabled="isBusy" @click="emit('newSession')">
           <span class="chat-new-session__label">Новая сессия</span>
@@ -322,6 +331,16 @@ function dismissError(): void {
             :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
+          <button
+            v-if="!isBusy && getMessageText(message)"
+            type="button"
+            class="message-memory-button"
+            title="Сохранить видимый текст в память"
+            @click="emit('saveMemory', { text: getMessageText(message), source: { sourceSessionId: props.session.id, sourceMessageId: message.id } })"
+          >
+            <UIcon name="i-lucide-brain" aria-hidden="true" />
+            <span>Сохранить в память</span>
+          </button>
           <button
             v-if="message.role === 'assistant' && !isBusy"
             type="button"
@@ -409,6 +428,22 @@ function dismissError(): void {
 }
 
 .branch-message-button:hover { color: #1e293b; background: #f1f5f9; }
+
+.message-memory-button {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  margin-top: .35rem;
+  border: 0;
+  padding: .2rem .35rem;
+  color: #64748b;
+  background: transparent;
+  font: inherit;
+  font-size: .72rem;
+  cursor: pointer;
+}
+
+.message-memory-button:hover { color: #1d4ed8; background: #eff6ff; }
 
 .compaction-attempt {
   margin-top: 0.5rem;

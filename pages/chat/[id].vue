@@ -2,8 +2,11 @@
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import ChatSessionList from '~/components/ChatSessionList.vue'
 import ChatWorkspace from '~/components/ChatWorkspace.vue'
+import MemoryEntryForm from '~/components/MemoryEntryForm.vue'
 import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, pricingFromSettings, validateContextStrategySettings, validateModelId, type ChatCostSettings, type ChatContextStrategySettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
 import { selectInitialSession } from '~/shared/session-navigation'
+import { useMemory } from '~/composables/useMemory'
+import type { Project, MemorySource } from '~/shared/memory'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -12,6 +15,7 @@ interface SessionListResponse {
 }
 
 const route = useRoute()
+const memory = useMemory()
 const config = useRuntimeConfig()
 const defaultModel = config.public.chatDefaultModel
 const modelId = shallowRef(defaultModel)
@@ -40,6 +44,13 @@ const listError = shallowRef<string | null>(null)
 const operationError = shallowRef<string | null>(null)
 const modelSaveError = shallowRef<string | null>(null)
 const deleteError = shallowRef<string | null>(null)
+const projectError = shallowRef<string | null>(null)
+const projects = shallowRef<Project[]>([])
+const projectFilter = shallowRef<string | undefined>(typeof route.query.projectId === 'string' ? route.query.projectId : undefined)
+const memoryFormOpen = shallowRef(false)
+const memoryFormLayer = shallowRef<'working' | 'long_term'>('long_term')
+const memoryFormText = shallowRef('')
+const memoryFormSource = shallowRef<MemorySource | undefined>()
 const deletingId = shallowRef<string | null>(null)
 let modelSave = Promise.resolve()
 
@@ -127,8 +138,11 @@ async function loadSessions(append = false): Promise<SessionListResponse | null>
   listLoading.value = true
   listError.value = null
   try {
-    const query = append && nextCursor.value ? { cursor: nextCursor.value } : undefined
-    const result = await $fetch<SessionListResponse>('/api/sessions', { query })
+    const query = {
+      ...(append && nextCursor.value ? { cursor: nextCursor.value } : {}),
+      ...(projectFilter.value === undefined ? {} : { projectId: projectFilter.value }),
+    }
+    const result = await $fetch<SessionListResponse>('/api/sessions', { query: Object.keys(query).length > 0 ? query : undefined })
     sessions.value = append ? [...sessions.value, ...result.items] : result.items
     nextCursor.value = result.nextCursor
     return result
@@ -146,12 +160,69 @@ async function handleNewSession(): Promise<void> {
   let created = false
   try {
     await modelSave
-    const newSession = await $fetch<SessionSummary>('/api/sessions', { method: 'POST' })
+    const newSession = await $fetch<SessionSummary>('/api/sessions', { method: 'POST', body: projectFilter.value && projectFilter.value !== 'none' ? { projectId: projectFilter.value } : undefined })
     created = true
     await navigateTo(`/chat/${newSession.id}`)
   } catch {
     operationError.value = created ? 'Диалог создан, но не удалось его открыть.' : 'Не удалось создать новый диалог.'
   }
+}
+
+async function loadProjects(): Promise<void> {
+  try {
+    projects.value = (await memory.loadProjects()).items
+    projectError.value = null
+  } catch {
+    projectError.value = 'Не удалось загрузить проекты.'
+  }
+}
+
+async function handleProjectFilter(value: string | undefined): Promise<void> {
+  projectFilter.value = value
+  await loadSessions()
+}
+
+async function handleCreateProject(name: string): Promise<void> {
+  try {
+    const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { name } })
+    projects.value = [...projects.value, project]
+    projectFilter.value = project.id
+    await loadSessions()
+  } catch (caughtError) {
+    projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось создать проект.'
+  }
+}
+
+async function handleRenameProject(payload: { id: string; name: string; expectedRevision: number }): Promise<void> {
+  try {
+    const project = await $fetch<Project>(`/api/projects/${payload.id}`, { method: 'PATCH', body: payload })
+    projects.value = projects.value.map(item => item.id === project.id ? project : item)
+  } catch (caughtError) {
+    projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось переименовать проект.'
+    await loadProjects()
+  }
+}
+
+async function handleAssignProject(projectId: string): Promise<void> {
+  if (!session.value || session.value.projectId || workspaceBusy.value) return
+  try {
+    await $fetch(`/api/sessions/${session.value.id}/project`, { method: 'PATCH', body: { projectId } })
+    await Promise.all([loadSession(), loadSessions()])
+  } catch (caughtError) {
+    projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось подключить диалог к проекту.'
+  }
+}
+
+function handleSaveMemory(payload: { text: string; source: MemorySource }): void {
+  memoryFormLayer.value = session.value?.projectId ? 'working' : 'long_term'
+  memoryFormText.value = payload.text
+  memoryFormSource.value = payload.source
+  memoryFormOpen.value = true
+}
+
+function handleMemorySaved(): void {
+  memoryFormOpen.value = false
+  operationError.value = 'Запись сохранена в память.'
 }
 
 async function handleSelect(selectedId: string): Promise<void> {
@@ -306,7 +377,7 @@ onMounted(async () => {
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
-  await Promise.all([loadSession(), loadSessions()])
+  await Promise.all([loadSession(), loadSessions(), loadProjects()])
   await importLegacyCompactionSettings()
 })
 
@@ -381,12 +452,20 @@ watch(sessionId, () => {
       :loading="listLoading"
       :disabled="workspaceBusy || Boolean(deletingId)"
       :has-more="Boolean(nextCursor)"
+      :projects="projects"
+      :project-filter="projectFilter"
+      :current-project-id="session.projectId"
+      :project-error="projectError"
       @select="handleSelect"
       @update:model-value="handleModelChange"
       @save-settings="handleSettingsSave"
       @new-session="handleNewSession"
       @delete-session="handleDelete"
       @load-more="loadSessions(true)"
+      @update:project-filter="handleProjectFilter"
+      @create-project="handleCreateProject"
+      @rename-project="handleRenameProject"
+      @assign-project="handleAssignProject"
     />
     <ChatWorkspace
       :key="session.id"
@@ -405,6 +484,16 @@ watch(sessionId, () => {
       @busy-change="workspaceBusy = $event"
       @dismiss-operation-error="operationError = null"
       @create-branch="handleCreateBranch"
+      @save-memory="handleSaveMemory"
+    />
+    <MemoryEntryForm
+      :open="memoryFormOpen"
+      :layer="memoryFormLayer"
+      :project-id="session.projectId"
+      :source="memoryFormSource"
+      :initial-text="memoryFormText"
+      @saved="handleMemorySaved"
+      @cancel="memoryFormOpen = false"
     />
   </div>
 </template>

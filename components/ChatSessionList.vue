@@ -2,6 +2,8 @@
 import { computed, shallowRef } from 'vue'
 import ChatSettingsModal from '~/components/ChatSettingsModal.vue'
 import type { ChatCostSettings, ChatContextStrategySettings, SessionSummary } from '~/shared/chat'
+import ProjectSelector from '~/components/ProjectSelector.vue'
+import type { Project } from '~/shared/memory'
 
 const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
 const detailedStatistics = defineModel<boolean>('detailedStatistics', { default: false })
@@ -23,6 +25,10 @@ const props = defineProps<{
   loading?: boolean
   disabled?: boolean
   hasMore?: boolean
+  projects?: Project[]
+  projectFilter?: string
+  currentProjectId?: string
+  projectError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +39,10 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   'update:contextLimit': [value: string]
   saveSettings: [payload: { modelId: string; contextLimit: string; contextStrategy: ChatContextStrategySettings; costSettings: ChatCostSettings; detailedStatistics: boolean }]
+  'update:projectFilter': [value: string | undefined]
+  createProject: [name: string]
+  renameProject: [payload: { id: string; name: string; expectedRevision: number }]
+  assignProject: [projectId: string]
 }>()
 
 function statusLabel(status: SessionSummary['status']): string {
@@ -95,6 +105,18 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
       @save="handleSettingsSave"
     />
 
+    <ProjectSelector
+      :projects="props.projects ?? []"
+      :model-value="props.projectFilter"
+      :assigned-project-id="props.currentProjectId"
+      :disabled="props.disabled"
+      @update:model-value="emit('update:projectFilter', $event)"
+      @create="emit('createProject', $event)"
+      @rename="emit('renameProject', $event)"
+      @assign-session="emit('assignProject', $event)"
+    />
+    <p v-if="props.projectError" class="session-sidebar__error" role="alert">{{ props.projectError }}</p>
+
     <div class="session-sidebar__header">
       <div>
         <p class="session-sidebar__eyebrow">История</p>
@@ -133,7 +155,19 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
         >
           <span class="session-list__item-copy">
             <strong>{{ item.title }}</strong>
-            <span>{{ formatDate(item.updatedAt) }}</span>
+            <span class="session-list__item-meta">
+              <span
+                class="session-list__kind"
+                :class="{ 'session-list__kind--branch': item.branchSourceMessageId }"
+              >
+                <UIcon
+                  :name="item.branchSourceMessageId ? 'i-lucide-git-branch' : 'i-lucide-message-square'"
+                  aria-hidden="true"
+                />
+                {{ item.branchSourceMessageId ? 'Ветка' : 'Основной диалог' }}
+              </span>
+              <span>{{ formatDate(item.updatedAt) }}</span>
+            </span>
           </span>
           <span v-if="statusLabel(item.status)" class="session-list__status">
             {{ statusLabel(item.status) }}
