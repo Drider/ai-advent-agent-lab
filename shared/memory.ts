@@ -1,3 +1,5 @@
+import type { UIMessage } from 'ai'
+
 export const DEFAULT_MEMORY_BUDGETS = {
   workingTokens: 2_000,
   longTermTokens: 2_000,
@@ -65,6 +67,47 @@ export interface MemoryListQuery {
 export interface MemoryPage<T> {
   items: T[]
   nextCursor?: string
+}
+
+export type MemoryLayer = 'working' | 'long_term'
+
+export interface MemoryLayerPreview {
+  count: number
+  bytes: number
+  estimatedTokens: number
+  budgetTokens: number
+  percent: number
+  exceeded: boolean
+}
+
+export interface MemoryPreview {
+  projectId?: string
+  working: MemoryLayerPreview
+  longTerm: MemoryLayerPreview
+}
+
+export type MemorySelectionReason = 'working_project' | 'global' | 'project'
+
+export interface MemorySelectionRef {
+  id: string
+  revision: number
+  reasons: MemorySelectionReason[]
+}
+
+export interface MemorySnapshot {
+  id: string
+  sessionId: string
+  projectId?: string
+  budgets: MemoryBudgets
+  workingEntries: WorkingMemoryEntry[]
+  longTermFacts: LongTermFact[]
+  workingRefs: MemorySelectionRef[]
+  longTermRefs: MemorySelectionRef[]
+  messages: UIMessage[]
+  preview: MemoryPreview
+  transientMemory: {
+    messages: Array<{ id: string; layer: MemoryLayer; text: string }>
+  }
 }
 
 export interface CreateWorkingEntry extends MemorySource {

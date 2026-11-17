@@ -20,6 +20,10 @@ export interface RunLogResponse {
   timestamp?: unknown
 }
 
+export interface TransientMemoryLog {
+  messages: Array<{ id: string; layer: 'working' | 'long_term'; text: string }>
+}
+
 export interface RunLogEntry {
   runId: string
   level: RunLogLevel
@@ -41,6 +45,8 @@ export interface RunLogEntry {
   response?: RunLogResponse
   steps?: unknown[]
   rawResponse?: unknown[]
+  /** Server-only prompt blocks that must be projected out of persisted diagnostics. */
+  transientMemory?: TransientMemoryLog
 }
 
 interface StoredRunLog {
@@ -73,17 +79,26 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   )
 }
 
-function redactSecrets(value: unknown, ancestors = new WeakSet<object>(), sensitiveValues: readonly string[] = []): unknown {
+function redactSecrets(
+  value: unknown,
+  ancestors = new WeakSet<object>(),
+  sensitiveValues: readonly string[] = [],
+  transientTexts: ReadonlyArray<{ text: string; layer: string }> = [],
+): unknown {
   if (typeof value === 'string') {
     // API error bodies are often JSON encoded inside a string.
     if (/^\s*[\[{]/u.test(value)) {
       try {
         const parsed = JSON.parse(value)
-        const redacted = JSON.stringify(redactSecrets(parsed, ancestors, sensitiveValues))
+        const redacted = JSON.stringify(redactSecrets(parsed, ancestors, sensitiveValues, transientTexts))
         return redacted === JSON.stringify(parsed) ? value : redacted
       } catch { /* Keep non-JSON provider messages as text. */ }
     }
-    return redactString(value, sensitiveValues)
+    let redacted = value
+    for (const block of transientTexts) {
+      if (block.text) redacted = redacted.replaceAll(block.text, `[${block.layer} memory omitted]`)
+    }
+    return redactString(redacted, sensitiveValues)
   }
 
   if (!isRecord(value)) {
@@ -94,7 +109,7 @@ function redactSecrets(value: unknown, ancestors = new WeakSet<object>(), sensit
   ancestors.add(value)
   try {
     if (value instanceof Date) return value.toISOString()
-    if (Array.isArray(value)) return value.map(item => redactSecrets(item, ancestors, sensitiveValues))
+    if (Array.isArray(value)) return value.map(item => redactSecrets(item, ancestors, sensitiveValues, transientTexts))
 
     // Error.message/stack/cause are not enumerable; omit request bodies and credentials.
     const entries = value instanceof Error
@@ -107,7 +122,7 @@ function redactSecrets(value: unknown, ancestors = new WeakSet<object>(), sensit
     for (const [key, item] of entries) {
       result[key] = /^(?:x[-_]?)?api[-_]?key$|^(?:proxy[-_]?)?authorization$|^(?:access[-_]?|refresh[-_]?)?token$|^(?:client[-_]?)?secret$|^password$|^(?:set[-_]?)?cookie$/iu.test(key)
         ? '[REDACTED]'
-        : redactSecrets(item, ancestors, sensitiveValues)
+        : redactSecrets(item, ancestors, sensitiveValues, transientTexts)
     }
     return result
   } finally {
@@ -115,14 +130,24 @@ function redactSecrets(value: unknown, ancestors = new WeakSet<object>(), sensit
   }
 }
 
-function projectRequest(request: RunLogRequest | undefined): unknown {
+function projectRequest(request: RunLogRequest | undefined, transientMemory: TransientMemoryLog | undefined): unknown {
   if (!request) {
     return undefined
   }
 
+  const transientById = new Map((transientMemory?.messages ?? []).map(message => [message.id, message.layer]))
+  const messages = Array.isArray(request.messages)
+    ? request.messages.map(message => {
+        if (!isRecord(message) || typeof message.id !== 'string') return message
+        const layer = transientById.get(message.id)
+        return layer === undefined
+          ? message
+          : { ...message, parts: [{ type: 'text', text: `[${layer} memory omitted]` }] }
+      })
+    : request.messages
   return {
     ...(request.model === undefined ? {} : { model: request.model }),
-    ...(request.messages === undefined ? {} : { messages: request.messages }),
+    ...(messages === undefined ? {} : { messages }),
     ...(request.instructions === undefined ? {} : { instructions: request.instructions }),
   }
 }
@@ -190,7 +215,7 @@ function projectEntry(entry: RunLogEntry): Record<string, unknown> {
   if (entry.level === 'detailed' || entry.level === 'raw') {
     if (entry.errorDetails !== undefined) projected.errorDetails = entry.errorDetails
     if (entry.diagnostics !== undefined) projected.diagnostics = entry.diagnostics
-    const request = projectRequest(entry.request)
+    const request = projectRequest(entry.request, entry.transientMemory)
     const response = projectResponse(entry.response)
     if (request !== undefined) {
       projected.request = request
@@ -207,7 +232,12 @@ function projectEntry(entry: RunLogEntry): Record<string, unknown> {
     projected.rawResponse = entry.rawResponse
   }
 
-  return redactSecrets(projected, new WeakSet<object>(), entry.sensitiveValues) as Record<string, unknown>
+  return redactSecrets(
+    projected,
+    new WeakSet<object>(),
+    entry.sensitiveValues,
+    entry.transientMemory?.messages ?? [],
+  ) as Record<string, unknown>
 }
 
 async function readStoredRunLog(filePath: string): Promise<StoredRunLog | null> {

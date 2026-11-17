@@ -11,7 +11,7 @@ import {
   type UIMessage,
 } from 'ai'
 import { calculateChatCost, DEFAULT_COMPACTION_SETTINGS, stopReasonMessage, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
-import { appendRunLogEntry, type RunLogEntry, type RunLogLevel, type RunLogStatus } from '../utils/run-logger'
+import { appendRunLogEntry, type RunLogEntry, type RunLogLevel, type RunLogStatus, type TransientMemoryLog } from '../utils/run-logger'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createFileTools, type FileTools } from '../tools/files'
 import { createSessionTools, type SessionTools } from '../tools/sessions'
@@ -163,6 +163,7 @@ export async function streamChatAgent(input: {
   sessionId?: string
   turnId?: string
   turnRepository?: ReturnType<typeof createTurnRepository>
+  memoryMetadata?: TransientMemoryLog
   disableMutatingTools?: boolean
   contextWindowTokens?: number
   promptOverheadTokens?: number
@@ -331,6 +332,7 @@ export async function streamChatAgent(input: {
         : undefined,
       steps,
       rawResponse: input.logLevel === 'raw' ? rawResponse : undefined,
+      transientMemory: input.memoryMetadata,
     }
 
     try {

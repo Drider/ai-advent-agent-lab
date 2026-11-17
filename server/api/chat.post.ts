@@ -12,6 +12,9 @@ import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-r
 import { prepareSessionContext } from '../context-compaction/prepare'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import type { ChatUIMessage } from '../../shared/chat'
+import { startMemoryAwareTurn } from '../memory/start-turn'
+import { toMemoryHttpError } from '../memory/api-errors'
+import type { MemorySnapshot } from '../../shared/memory'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -64,32 +67,15 @@ export default defineEventHandler(async (event) => {
   const agentConfig = getAgentConfig(compactionSettings, contextStrategy)
   const model = provider.chat(chatConfig.modelId)
   let turnId: string
+  let memorySnapshot: MemorySnapshot
   try {
-    if (request.kind === 'message') {
-      turnId = turns.beginUserTurn({
-        sessionId: request.sessionId,
-        requestId: request.requestId,
-        modelId: chatConfig.modelId,
-        message: request.message as ChatUIMessage,
-        agentConfig,
-      }).turnId
-    } else {
-      const continuation = turns.assessContinuation(request.sourceTurnId)
-      if (continuation === 'not_available') {
-        throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${request.sourceTurnId} is not available for continuation`)
-      }
-      if (continuation === 'needs_review') {
-        throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${request.sourceTurnId} has an unconfirmed tool result`)
-      }
-      turnId = turns.beginContinuation({
-        sessionId: request.sessionId,
-        requestId: request.requestId,
-        sourceTurnId: request.sourceTurnId,
-        modelId: chatConfig.modelId,
-        message: request.message as ChatUIMessage,
-        agentConfig,
-      }).turnId
-    }
+    const started = startMemoryAwareTurn(db, {
+      request,
+      modelId: chatConfig.modelId,
+      agentConfig,
+    })
+    turnId = started.turnId
+    memorySnapshot = started.snapshot
   } catch (error) {
     if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
       throw createError({ statusCode: 409, statusMessage: error.message })
@@ -102,6 +88,9 @@ export default defineEventHandler(async (event) => {
     }
     if (error instanceof TurnRepositoryError && error.code === 'CONTINUATION_NEEDS_REVIEW') {
       throw createError({ statusCode: 409, statusMessage: error.message })
+    }
+    if (error instanceof Error && 'code' in error && (error as { code?: unknown }).code === 'MEMORY_BUDGET_EXCEEDED') {
+      throw toMemoryHttpError(error)
     }
     throw error
   }
@@ -121,6 +110,7 @@ export default defineEventHandler(async (event) => {
       modelId: chatConfig.modelId,
       settings: compactionSettings,
       contextStrategy,
+      memorySnapshot,
       pricing: request.pricing,
       promptOverheadTokens,
       abortSignal: event.web?.request?.signal,
@@ -149,6 +139,7 @@ export default defineEventHandler(async (event) => {
       pricing: request.pricing,
       sessionId: request.sessionId,
       turnId,
+      memoryMetadata: memorySnapshot.transientMemory,
       turnRepository: turns,
       disableMutatingTools: request.kind === 'continue',
     },

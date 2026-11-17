@@ -9,6 +9,16 @@ import { getCompactionErrorUsage, summarizeOldContext } from './summarizer'
 import { assertStepWithinBudget, ContextLimitError } from './step-guard'
 import { selectSlidingWindow } from './sliding-window'
 import type { CompactionAttempt, ContextCheckpoint, StoredContextMessage } from './types'
+import { estimateInputTokens } from './estimate'
+import type { MemorySnapshot } from '../../shared/memory'
+
+function memoryOverheadTokens(snapshot: MemorySnapshot | undefined): number {
+  return snapshot === undefined ? 0 : estimateInputTokens(snapshot.messages, 0)
+}
+
+function withMemory(snapshot: MemorySnapshot | undefined, messages: UIMessage[]): UIMessage[] {
+  return snapshot === undefined ? messages : [...snapshot.messages, ...messages]
+}
 
 function historicalSummaryMessage(checkpoint: ContextCheckpoint): UIMessage {
   return {
@@ -63,6 +73,7 @@ export async function prepareSessionContext(input: {
   modelId: string
   settings: ChatCompactionSettings
   contextStrategy?: ChatContextStrategySettings
+  memorySnapshot?: MemorySnapshot
   pricing?: ChatPricing
   promptOverheadTokens: number
   abortSignal?: AbortSignal
@@ -77,12 +88,13 @@ export async function prepareSessionContext(input: {
   const checkpoint = repository.latestCheckpoint(input.sessionId)
   const originalMessages = storedMessages.map(item => item.message)
   const strategy = input.contextStrategy?.strategy ?? (input.settings.enabled ? 'summary' : 'off')
+  const contextPromptOverheadTokens = input.promptOverheadTokens + memoryOverheadTokens(input.memorySnapshot)
 
   if (strategy === 'off' || strategy === 'sliding_window') {
     const selected = strategy === 'sliding_window'
       ? selectSlidingWindow(storedMessages, input.contextStrategy?.windowSize ?? 10)
       : storedMessages
-    const modelMessages = await validateUIMessages({ messages: selected.map(item => item.message) })
+    const modelMessages = await validateUIMessages({ messages: withMemory(input.memorySnapshot, selected.map(item => item.message)) })
     assertStepWithinBudget({
       messages: modelMessages as unknown as ModelMessage[],
       contextWindowTokens: input.settings.contextWindowTokens,
@@ -130,9 +142,10 @@ export async function prepareSessionContext(input: {
     }
     const tail = selectSlidingWindow(storedMessages, input.contextStrategy?.windowSize ?? 10)
     const factsMessage = stickyFactsMessage(facts, tail.at(-1)?.position ?? -1)
-    const modelMessages = await validateUIMessages({
-      messages: factsMessage === undefined ? tail.map(item => item.message) : [factsMessage, ...tail.map(item => item.message)],
-    })
+    const modelMessages = await validateUIMessages({ messages: withMemory(
+      input.memorySnapshot,
+      factsMessage === undefined ? tail.map(item => item.message) : [factsMessage, ...tail.map(item => item.message)],
+    ) })
     assertStepWithinBudget({
       messages: modelMessages as unknown as ModelMessage[],
       contextWindowTokens: input.settings.contextWindowTokens,
@@ -145,14 +158,20 @@ export async function prepareSessionContext(input: {
     messages: storedMessages,
     checkpoint,
     settings: input.settings,
-    promptOverheadTokens: input.promptOverheadTokens,
+    promptOverheadTokens: contextPromptOverheadTokens,
   })
   if (decision.kind === 'overflow') {
     throw new ContextLimitError(decision.estimatedBeforeTokens, input.settings.contextWindowTokens)
   }
   if (decision.kind === 'pass') {
-    const modelMessages = modelMessagesFor(checkpoint, storedMessages.filter(item => checkpoint === null || item.position > checkpoint.throughMessagePosition))
-    return { modelMessages: await validateUIMessages({ messages: modelMessages }), originalMessages }
+    const modelMessages = withMemory(input.memorySnapshot, modelMessagesFor(checkpoint, storedMessages.filter(item => checkpoint === null || item.position > checkpoint.throughMessagePosition)))
+    const validatedMessages = await validateUIMessages({ messages: modelMessages })
+    assertStepWithinBudget({
+      messages: validatedMessages as unknown as ModelMessage[],
+      contextWindowTokens: input.settings.contextWindowTokens,
+      promptOverheadTokens: input.promptOverheadTokens,
+    })
+    return { modelMessages: validatedMessages, originalMessages }
   }
 
   const attemptId = repository.beginAttempt({
@@ -181,9 +200,15 @@ export async function prepareSessionContext(input: {
       costRub: summary.usage === undefined ? undefined : calculateChatCost(summary.usage, input.pricing),
     })
     if (!checkpointResult) throw new Error('compaction did not create a checkpoint')
-    const modelMessages = modelMessagesFor(checkpointResult, decision.tail)
+    const modelMessages = withMemory(input.memorySnapshot, modelMessagesFor(checkpointResult, decision.tail))
+    const validatedMessages = await validateUIMessages({ messages: modelMessages })
+    assertStepWithinBudget({
+      messages: validatedMessages as unknown as ModelMessage[],
+      contextWindowTokens: input.settings.contextWindowTokens,
+      promptOverheadTokens: input.promptOverheadTokens,
+    })
     return {
-      modelMessages: await validateUIMessages({ messages: modelMessages }),
+      modelMessages: validatedMessages,
       originalMessages,
       attempt: findAttempt(repository, input.sessionId, attemptId),
     }
