@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { MemoryError } from '../memory/errors'
 import type { MemoryListQuery, MemoryPage, Project } from '../../shared/memory'
+import { assertHistoryAvailable } from '../memory/clear-repository'
 
 const DEFAULT_PAGE_SIZE = 30
 const MAX_PAGE_SIZE = 100
@@ -105,6 +106,7 @@ export function createProjectRepository(db: Database.Database) {
       if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new MemoryError('NOT_FOUND', 'project was not found')
       const session = db.prepare('SELECT project_id, status FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null; status: string } | undefined
       if (!session) throw new MemoryError('NOT_FOUND', 'session was not found')
+      assertHistoryAvailable(db, sessionId)
       if (session.project_id !== null) throw new MemoryError('PROJECT_ALREADY_ASSIGNED', 'session already belongs to a project')
       if (session.status === 'running' || db.prepare("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running'").get(sessionId)) {
         throw new MemoryError('SESSION_RUNNING', 'session is running')

@@ -7,6 +7,7 @@ import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import { createTurnRepository } from './turn-repository'
 import { createFactsRepository } from '../context-compaction/facts-repository'
 import { MemoryError } from '../memory/errors'
+import { assertHistoryAvailable } from '../memory/clear-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   DEFAULT_CONTEXT_STRATEGY_SETTINGS,
@@ -197,7 +198,7 @@ function getCompactionAttempts(db: Database.Database, sessionId: string): Compac
       ON user_message.turn_id = a.turn_id AND user_message.role = 'user'
     WHERE a.session_id = ?
     GROUP BY a.id
-    ORDER BY a.started_at ASC, a.id ASC
+    ORDER BY a.started_at ASC, a.rowid ASC
   `).all(sessionId) as CompactionAttemptRow[]
 
   return rows.map(row => {
@@ -475,6 +476,7 @@ export function createSessionRepository(db: Database.Database) {
       if (!session) {
         throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} was not found`)
       }
+      assertHistoryAvailable(db, id)
       if (session.status === 'running' || db.prepare("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running'").get(id)) {
         throw new ChatStorageError('SESSION_RUNNING', `session ${id} is running`)
       }
@@ -487,7 +489,8 @@ export function createSessionRepository(db: Database.Database) {
           JOIN turns ON turns.id = tool_executions.turn_id
           WHERE turns.session_id = ?
         )
-      `).run(id)
+        OR tool_call_id IN (SELECT tool_call_id FROM cleared_tool_calls WHERE session_id = ?)
+      `).run(id, id)
       db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
     }).immediate()
   }

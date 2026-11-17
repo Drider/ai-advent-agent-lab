@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { validateContextStrategySettings, type ChatSessionStatus, type SessionSummary } from '../../shared/chat'
+import { assertHistoryAvailable } from '../memory/clear-repository'
 
 export class BranchRepositoryError extends Error {
-  constructor(public readonly code: 'SESSION_NOT_FOUND' | 'SESSION_RUNNING' | 'INVALID_POINT', message: string) {
+  constructor(public readonly code: 'SESSION_NOT_FOUND' | 'SESSION_RUNNING' | 'HISTORY_CLEAR_PENDING' | 'INVALID_POINT', message: string) {
     super(message)
     this.name = 'BranchRepositoryError'
   }
@@ -37,6 +38,14 @@ export function createBranchRepository(db: Database.Database) {
         project_id: string | null
       } | undefined
       if (!parent) throw new BranchRepositoryError('SESSION_NOT_FOUND', 'parent session was not found')
+      try {
+        assertHistoryAvailable(db, parent.id)
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && (error as { code?: unknown }).code === 'HISTORY_CLEAR_PENDING') {
+          throw new BranchRepositoryError('HISTORY_CLEAR_PENDING', error.message)
+        }
+        throw error
+      }
       if (parent.status === 'running' || db.prepare("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running'").get(parent.id)) {
         throw new BranchRepositoryError('SESSION_RUNNING', 'cannot branch while the parent is running')
       }

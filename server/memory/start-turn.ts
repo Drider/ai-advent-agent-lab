@@ -4,6 +4,7 @@ import { ContextLimitError } from '../context-compaction/step-guard'
 import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-repository'
 import type { ChatRequestBody, ChatUIMessage } from '../../shared/chat'
 import { assertMemoryBudgets, createMemorySnapshot } from './context'
+import { assertHistoryAvailable } from './clear-repository'
 import type { MemorySnapshot } from '../../shared/memory'
 
 function promptOverhead(agentConfig: Record<string, unknown>): number {
@@ -24,6 +25,7 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
   modelId: string
   agentConfig: Record<string, unknown>
 }): { turnId: string; snapshot: MemorySnapshot } {
+  assertHistoryAvailable(db, input.request.sessionId)
   const snapshot = createMemorySnapshot(db, input.request.sessionId)
   assertMemoryBudgets(snapshot)
   assertImmediateMemoryWindow(snapshot, input.request, input.agentConfig)

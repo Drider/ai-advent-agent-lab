@@ -1,6 +1,7 @@
 import { createError, defineEventHandler, getRouterParam, setHeader } from 'h3'
 import { getChatDatabase } from '../../persistence/db'
 import { ChatStorageError, createSessionRepository } from '../../persistence/session-repository'
+import { toMemoryHttpError } from '../../memory/api-errors'
 
 export default defineEventHandler((event) => {
   setHeader(event, 'Cache-Control', 'no-store')
@@ -20,6 +21,9 @@ export default defineEventHandler((event) => {
       if (error.code === 'SESSION_RUNNING') {
         throw createError({ statusCode: 409, statusMessage: 'Session is running' })
       }
+    }
+    if (error instanceof Error && 'code' in error && (error as { code?: unknown }).code === 'HISTORY_CLEAR_PENDING') {
+      throw toMemoryHttpError(error)
     }
     throw error
   }

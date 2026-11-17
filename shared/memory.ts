@@ -167,6 +167,19 @@ export interface MemoryStatistics {
   recordUsage: MemoryRecordUsage[]
 }
 
+export type HistoryClearStatus = 'pending_files' | 'completed' | 'failed'
+
+export interface HistoryClearResult {
+  operationId: string
+  sessionId: string
+  status: HistoryClearStatus
+  oldRunLogId?: string
+  newRunLogId?: string
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
 export interface CreateWorkingEntry extends MemorySource {
   projectId: string
   category: WorkingMemoryCategory

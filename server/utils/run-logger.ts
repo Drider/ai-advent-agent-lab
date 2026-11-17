@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { LanguageModelUsage } from 'ai'
 
@@ -59,6 +59,7 @@ interface StoredRunLog {
 
 const ISO_RUN_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const pendingWrites = new Map<string, Promise<void>>()
+const closedRunLogs = new Set<string>()
 let temporaryFileCounter = 0
 
 function normalizeRunId(runId: string): string {
@@ -263,6 +264,8 @@ export async function appendRunLogEntry(
   }
 
   const runId = normalizeRunId(entry.runId)
+  if (closedRunLogs.has(runId)) return
+
   const filePath = join(directory, `run-${runId}.json`)
   const previousWrite = pendingWrites.get(filePath) ?? Promise.resolve()
   const nextWrite = previousWrite
@@ -295,5 +298,24 @@ export async function appendRunLogEntry(
     if (pendingWrites.get(filePath) === nextWrite) {
       pendingWrites.delete(filePath)
     }
+  }
+}
+
+/** Prevents new entries for a run and removes its file after queued writes finish. */
+export async function closeAndDeleteRunLog(
+  runId: string,
+  directory = join(process.cwd(), 'data', 'runs'),
+): Promise<void> {
+  const normalizedRunId = normalizeRunId(runId)
+  closedRunLogs.add(normalizedRunId)
+  const filePath = join(directory, `run-${normalizedRunId}.json`)
+  try {
+    await (pendingWrites.get(filePath) ?? Promise.resolve())
+    await unlink(filePath).catch((error: unknown) => {
+      if (isRecord(error) && error.code === 'ENOENT') return
+      throw error
+    })
+  } finally {
+    pendingWrites.delete(filePath)
   }
 }

@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
     return createBranchRepository(getChatDatabase()).createBranch({ parentSessionId, throughMessageId })
   } catch (error) {
     if (error instanceof BranchRepositoryError) {
-      const statusCode = error.code === 'SESSION_NOT_FOUND' ? 404 : error.code === 'SESSION_RUNNING' ? 409 : 400
+      const statusCode = error.code === 'SESSION_NOT_FOUND' ? 404 : error.code === 'SESSION_RUNNING' || error.code === 'HISTORY_CLEAR_PENDING' ? 409 : 400
       throw createError({ statusCode, statusMessage: error.message })
     }
     throw error

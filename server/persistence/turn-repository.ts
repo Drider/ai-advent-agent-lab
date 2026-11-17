@@ -9,6 +9,7 @@ import {
   type ChatUIMessage,
   type SessionTurnSummary,
 } from '../../shared/chat'
+import { assertHistoryAvailable } from '../memory/clear-repository'
 
 export class TurnRepositoryError extends Error {
   constructor(
@@ -77,6 +78,10 @@ export function createTurnRepository(db: Database.Database) {
   }
 
   function assertCanStart(sessionId: string, requestId: string): void {
+    assertHistoryAvailable(db, sessionId)
+    if (db.prepare('SELECT 1 FROM cleared_requests WHERE request_id = ?').get(requestId)) {
+      throw new TurnRepositoryError('TURN_ALREADY_EXISTS', `TURN_ALREADY_EXISTS: request ${requestId} was cleared from history`)
+    }
     if (db.prepare('SELECT 1 FROM turns WHERE request_id = ?').get(requestId)) {
       throw new TurnRepositoryError('TURN_ALREADY_EXISTS', `TURN_ALREADY_EXISTS: request ${requestId} already exists`)
     }
