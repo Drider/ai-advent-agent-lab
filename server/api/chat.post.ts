@@ -15,6 +15,8 @@ import type { ChatUIMessage } from '../../shared/chat'
 import { startMemoryAwareTurn } from '../memory/start-turn'
 import { toMemoryHttpError } from '../memory/api-errors'
 import type { MemorySnapshot } from '../../shared/memory'
+import { estimateInputTokens } from '../context-compaction/estimate'
+import { createMemoryUsageRepository } from '../memory/usage-repository'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -118,6 +120,23 @@ export default defineEventHandler(async (event) => {
   } catch (error) {
     turns.markFailed(turnId, classifyAgentStopReason(error))
     throw error
+  }
+
+  try {
+    const memoryIds = new Set(memorySnapshot.messages.map(message => message.id))
+    const shortTermMessages = preparedContext.modelMessages.filter(message => !memoryIds.has(message.id))
+    const shortTermBytes = shortTermMessages.reduce((total, message) => total + Buffer.byteLength(JSON.stringify({ role: message.role, parts: message.parts }), 'utf8'), 0)
+    createMemoryUsageRepository(db).recordPrepared({
+      turnId,
+      snapshot: memorySnapshot,
+      shortTerm: {
+        count: shortTermMessages.length,
+        bytes: shortTermBytes,
+        estimatedTokens: estimateInputTokens(shortTermMessages, 0),
+      },
+    })
+  } catch (error) {
+    console.error('[chat] failed to record memory usage', error)
   }
 
   const diceRepository = createDiceRollRepository(db)

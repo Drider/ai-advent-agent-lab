@@ -110,6 +110,63 @@ export interface MemorySnapshot {
   }
 }
 
+export interface MemoryUsageNumbers {
+  count: number
+  bytes: number
+  estimatedTokens: number
+}
+
+export interface MemoryUsageEvent {
+  id: string
+  snapshotId: string
+  sessionId: string
+  projectId?: string
+  turnId?: string
+  preparedAt: string
+  contextCleared: boolean
+  shortTerm: MemoryUsageNumbers
+  working: MemoryUsageNumbers
+  longTerm: MemoryUsageNumbers
+  workingRefs: MemorySelectionRef[]
+  longTermRefs: MemorySelectionRef[]
+}
+
+export type MemoryScope =
+  | { scope: 'dialogue'; sessionId: string }
+  | { scope: 'project'; projectId: string }
+  | { scope: 'global' }
+
+export interface MemoryStoredLayer extends MemoryUsageNumbers {
+  messages?: number
+  entries?: number
+  facts?: number
+}
+
+export interface MemoryRecordUsage {
+  id: string
+  layer: 'working' | 'long_term'
+  preparedTurns: number
+  lastPreparedAt?: string
+  revisionMismatch: boolean
+}
+
+export interface MemoryStatistics {
+  scope: MemoryScope['scope']
+  sessionId?: string
+  projectId?: string
+  collectionStartedAt?: string
+  stored: {
+    shortTerm: MemoryStoredLayer
+    working: MemoryStoredLayer
+    longTerm: MemoryStoredLayer
+    summaries: number
+    stickyFacts: number
+  }
+  preparedTurns: number
+  lastPrepared?: MemoryUsageEvent
+  recordUsage: MemoryRecordUsage[]
+}
+
 export interface CreateWorkingEntry extends MemorySource {
   projectId: string
   category: WorkingMemoryCategory
