@@ -11,6 +11,7 @@ export default defineEventHandler((event) => {
   const query = getQuery(event)
   const cursor = getSingleQueryValue(query.cursor as string | string[] | undefined)
   const rawLimit = getSingleQueryValue(query.limit as string | string[] | undefined)
+  const rawProjectId = getSingleQueryValue(query.projectId as string | string[] | undefined)
   let normalizedLimit: number | undefined
 
   if (rawLimit !== undefined) {
@@ -22,7 +23,8 @@ export default defineEventHandler((event) => {
   }
 
   try {
-    return createSessionRepository(getChatDatabase()).listSessions({ limit: normalizedLimit, cursor })
+    const projectId = rawProjectId === undefined ? undefined : rawProjectId === 'none' ? null : rawProjectId
+    return createSessionRepository(getChatDatabase()).listSessions({ limit: normalizedLimit, cursor, projectId })
   } catch (error) {
     if (error instanceof ChatStorageError && error.code === 'INVALID_CURSOR') {
       throw createError({ statusCode: 400, statusMessage: error.message })

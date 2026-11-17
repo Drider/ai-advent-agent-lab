@@ -6,6 +6,7 @@ import { validateUIMessages } from 'ai'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import { createTurnRepository } from './turn-repository'
 import { createFactsRepository } from '../context-compaction/facts-repository'
+import { MemoryError } from '../memory/errors'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   DEFAULT_CONTEXT_STRATEGY_SETTINGS,
@@ -50,6 +51,7 @@ interface SessionRow {
   context_strategy_json: string
   parent_session_id: string | null
   branch_source_message_id: string | null
+  project_id: string | null
 }
 
 interface MessageRow {
@@ -105,6 +107,7 @@ function toSummary(row: SessionRow, title = row.title): SessionSummary {
     ...(row.last_opened_at === null ? {} : { lastOpenedAt: row.last_opened_at }),
     status: row.status,
     revision: row.revision,
+    ...(row.project_id === null ? {} : { projectId: row.project_id }),
     ...(row.parent_session_id === null ? {} : { parentSessionId: row.parent_session_id }),
     ...(row.branch_source_message_id === null ? {} : { branchSourceMessageId: row.branch_source_message_id }),
   }
@@ -282,11 +285,14 @@ async function decodeMessage(row: MessageRow): Promise<ChatUIMessage> {
 export function createSessionRepository(db: Database.Database) {
   const findSession = db.prepare('SELECT * FROM sessions WHERE id = ?')
   const insertSession = db.prepare(`
-    INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision)
-    VALUES (?, ?, ?, ?, ?, NULL, 'idle', 0)
+    INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision, project_id)
+    VALUES (?, ?, ?, ?, ?, NULL, 'idle', 0, ?)
   `)
 
-  function createSession(): SessionSummary {
+  function createSession(options: { projectId?: string } = {}): SessionSummary {
+    if (options.projectId !== undefined && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(options.projectId)) {
+      throw new MemoryError('NOT_FOUND', 'project was not found')
+    }
     const id = randomUUID()
     let timestamp = Date.now()
     let runLogId = new Date(timestamp).toISOString()
@@ -297,7 +303,7 @@ export function createSessionRepository(db: Database.Database) {
       runLogId = new Date(timestamp).toISOString()
     }
 
-    insertSession.run(id, runLogId, 'Новый диалог', runLogId, runLogId)
+    insertSession.run(id, runLogId, 'Новый диалог', runLogId, runLogId, options.projectId ?? null)
     return {
       id,
       runLogId,
@@ -306,10 +312,11 @@ export function createSessionRepository(db: Database.Database) {
       updatedAt: runLogId,
       status: 'idle',
       revision: 0,
+      ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
     }
   }
 
-  function listSessions(options: { limit?: number; cursor?: string } = {}): {
+  function listSessions(options: { limit?: number; cursor?: string; projectId?: string | null } = {}): {
     items: SessionSummary[]
     nextCursor?: string
     preferredSessionId?: string
@@ -317,31 +324,38 @@ export function createSessionRepository(db: Database.Database) {
     const requestedLimit = options.limit ?? DEFAULT_PAGE_SIZE
     const limit = Math.min(Math.max(Math.floor(requestedLimit), 1), MAX_PAGE_SIZE)
     const decodedCursor = decodeCursor(options.cursor)
-    const rows = (decodedCursor
-      ? db.prepare(`
-          SELECT * FROM sessions
-          WHERE updated_at < ? OR (updated_at = ? AND id < ?)
-          ORDER BY updated_at DESC, id DESC
-          LIMIT ?
-        `).all(decodedCursor.updatedAt, decodedCursor.updatedAt, decodedCursor.id, limit + 1)
-      : db.prepare(`
-          SELECT * FROM sessions
-          ORDER BY updated_at DESC, id DESC
-          LIMIT ?
-        `).all(limit + 1)) as SessionRow[]
+    const conditions: string[] = []
+    const params: Array<string | number | null> = []
+    if (options.projectId === null) conditions.push('project_id IS NULL')
+    else if (options.projectId !== undefined) {
+      conditions.push('project_id = ?')
+      params.push(options.projectId)
+    }
+    if (decodedCursor) {
+      conditions.push('(updated_at < ? OR (updated_at = ? AND id < ?))')
+      params.push(decodedCursor.updatedAt, decodedCursor.updatedAt, decodedCursor.id)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const rows = db.prepare(`
+      SELECT * FROM sessions
+      ${where}
+      ORDER BY updated_at DESC, id DESC
+      LIMIT ?
+    `).all(...params, limit + 1) as SessionRow[]
 
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
     const preferred = db.prepare(`
       SELECT id
       FROM sessions
+      ${options.projectId === null ? 'WHERE project_id IS NULL' : options.projectId === undefined ? '' : 'WHERE project_id = ?'}
       ORDER BY
         CASE WHEN last_opened_at IS NULL THEN 1 ELSE 0 END,
         last_opened_at DESC,
         updated_at DESC,
         id DESC
       LIMIT 1
-    `).get() as { id: string } | undefined
+    `).get(...(options.projectId !== undefined && options.projectId !== null ? [options.projectId] : [])) as { id: string } | undefined
 
     return {
       items: page.map(row => toSummary(row, getTitle(db, row.id, row.title))),

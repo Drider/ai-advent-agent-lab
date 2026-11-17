@@ -74,6 +74,7 @@ describe('dialogue branches', () => {
 
     sessions.deleteSession(parent.id)
     expect((await sessions.getSession(child.id))?.parent).toBeUndefined()
+    expect(sessions.listSessions().items.find(item => item.id === child.id)?.branchSourceMessageId).toBe(answer.id)
     db.close()
   })
 
@@ -88,6 +89,26 @@ describe('dialogue branches', () => {
     saveMessage(db, parent.id, 1, answer)
     expect(() => createBranchRepository(db).createBranch({ parentSessionId: parent.id, throughMessageId: answer.id })).toThrow()
     expect(db.prepare('SELECT COUNT(*) AS count FROM sessions').get()).toEqual({ count: 1 })
+    db.close()
+  })
+
+  it('inherits the parent project without copying project memory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-chat-branches-project-'))
+    directories.push(directory)
+    const db = openChatDatabase(join(directory, 'chat.sqlite'))
+    const sessions = createSessionRepository(db)
+    const projectId = randomUUID()
+    const timestamp = new Date().toISOString()
+    db.prepare('INSERT INTO projects (id, name, revision, created_at, updated_at) VALUES (?, ?, 0, ?, ?)')
+      .run(projectId, 'Project', timestamp, timestamp)
+    const parent = sessions.createSession({ projectId })
+    const answer: ChatUIMessage = { id: randomUUID(), role: 'assistant', parts: [{ type: 'text', text: 'Ответ' }] }
+    saveMessage(db, parent.id, 1, answer)
+
+    const child = createBranchRepository(db).createBranch({ parentSessionId: parent.id, throughMessageId: answer.id })
+    expect(child.projectId).toBe(projectId)
+    expect((await sessions.getSession(child.id))?.projectId).toBe(projectId)
+    expect(db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(child.id)).toEqual({ project_id: projectId })
     db.close()
   })
 })

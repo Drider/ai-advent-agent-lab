@@ -1,4 +1,10 @@
-export type MemoryErrorCode = 'INVALID_INPUT' | 'REVISION_CONFLICT' | 'NOT_FOUND'
+export type MemoryErrorCode =
+  | 'INVALID_INPUT'
+  | 'REVISION_CONFLICT'
+  | 'NOT_FOUND'
+  | 'PROJECT_ALREADY_ASSIGNED'
+  | 'SESSION_RUNNING'
+  | 'HISTORY_CLEAR_PENDING'
 
 export class MemoryError extends Error {
   constructor(

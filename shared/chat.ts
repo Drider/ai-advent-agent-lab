@@ -148,6 +148,7 @@ export interface SessionSummary {
   lastOpenedAt?: string
   status: ChatSessionStatus
   revision: number
+  projectId?: string
   parentSessionId?: string
   branchSourceMessageId?: string
 }
