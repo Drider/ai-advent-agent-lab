@@ -7,7 +7,7 @@ export interface RecordedToolRepository {
     stepIndex: number
     name: string
     input: unknown
-  }): void | Promise<void>
+  }): boolean | void | Promise<boolean | void>
   recordToolEnd(input: {
     turnId: string
     toolCallId: string
@@ -35,13 +35,20 @@ export function recordToolExecution<TInput, TOutput, TContext = unknown>(
   return {
     ...originalTool,
     execute: async (input: TInput, executionOptions: ToolExecutionOptions<TContext>) => {
-      await options.repository.recordToolStart({
+      const started = await options.repository.recordToolStart({
         turnId: options.turnId,
         toolCallId: executionOptions.toolCallId,
         stepIndex: options.getStepIndex(),
         name: toolName,
         input,
       })
+      // The persistent repository returns false when the turn was stopped or
+      // the call was already recorded. In either case, executing the wrapped
+      // tool would create an untracked (and possibly duplicated) side effect.
+      // Void is kept as a successful result for lightweight/test repositories.
+      if (started === false) {
+        throw new Error('tool execution was cancelled because the turn is no longer running')
+      }
 
       let output: TOutput
       try {

@@ -36,6 +36,10 @@ function reset(): void {
   key.value = entry?.key ?? ''
   value.value = entry?.value ?? props.initialText ?? ''
   enabled.value = entry?.enabled ?? true
+  workingCategory.value = 'note'
+  longTermCategory.value = 'knowledge'
+  global.value = false
+  projectIds.value = []
   if (activeLayer.value === 'working') {
     workingCategory.value = (entry as WorkingMemoryEntry | undefined)?.category ?? 'note'
   } else {

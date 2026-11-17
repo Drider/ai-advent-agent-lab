@@ -327,7 +327,12 @@ export async function closeAndDeleteRunLog(
     })
     await Promise.all(names
       .filter(name => name.startsWith(temporaryPrefix) && name.endsWith('.tmp'))
-      .map(name => unlink(join(directory, name)).catch(() => undefined)))
+      .map(async name => {
+        await unlink(join(directory, name)).catch((error: unknown) => {
+          if (isRecord(error) && error.code === 'ENOENT') return
+          throw error
+        })
+      }))
   } finally {
     pendingWrites.delete(filePath)
   }

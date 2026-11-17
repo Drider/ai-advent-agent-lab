@@ -17,6 +17,7 @@ import { toMemoryHttpError } from '../memory/api-errors'
 import type { MemorySnapshot } from '../../shared/memory'
 import { estimateInputTokens } from '../context-compaction/estimate'
 import { createMemoryUsageRepository } from '../memory/usage-repository'
+import { ContextLimitError } from '../context-compaction/step-guard'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -94,6 +95,9 @@ export default defineEventHandler(async (event) => {
     if (error instanceof Error && 'code' in error && (error as { code?: unknown }).code === 'MEMORY_BUDGET_EXCEEDED') {
       throw toMemoryHttpError(error)
     }
+    if (error instanceof ContextLimitError) {
+      throw createError({ statusCode: 422, statusMessage: error.message })
+    }
     throw error
   }
 
@@ -119,6 +123,9 @@ export default defineEventHandler(async (event) => {
     })
   } catch (error) {
     turns.markFailed(turnId, classifyAgentStopReason(error))
+    if (error instanceof ContextLimitError) {
+      throw createError({ statusCode: 422, statusMessage: error.message })
+    }
     throw error
   }
 

@@ -47,6 +47,22 @@ describe('recordToolExecution', () => {
     expect(executeSpy).not.toHaveBeenCalled()
   })
 
+  it('does not execute a side effect when the turn was stopped before the intent commit', async () => {
+    const executeSpy = vi.fn(async () => 'never')
+    const wrapped = recordToolExecution(createTool(executeSpy), {
+      turnId: 'turn-1',
+      getStepIndex: () => 0,
+      repository: {
+        recordToolStart: async () => false,
+        recordToolEnd: async () => undefined,
+      },
+    })
+
+    await expect(wrapped.execute?.({ value: 'x' }, executionOptions('call-1')))
+      .rejects.toThrow('turn is no longer running')
+    expect(executeSpy).not.toHaveBeenCalled()
+  })
+
   it('surfaces a result persistence failure without retrying the tool', async () => {
     const executeSpy = vi.fn(async () => 'side effect happened')
     const wrapped = recordToolExecution(createTool(executeSpy), {

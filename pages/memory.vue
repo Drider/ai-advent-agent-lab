@@ -21,6 +21,7 @@ const projects = ref<Project[]>([])
 const budgets = ref<MemoryBudgets | null>(null)
 const preview = ref<MemoryPreview | null>(null)
 const statistics = ref<MemoryStatisticsData | null>(null)
+const globalStatistics = ref<MemoryStatisticsData | null>(null)
 const session = ref<SessionDetail | null>(null)
 const workingItems = ref<WorkingMemoryEntry[]>([])
 const longTermItems = ref<LongTermFact[]>([])
@@ -37,13 +38,15 @@ const formEntry = ref<WorkingMemoryEntry | LongTermFact | undefined>()
 const clearOpen = ref(false)
 const clearLayer = ref<Layer>('working')
 const pendingClear = ref<HistoryClearResult | undefined>()
+const activeClearOperationId = ref<string | undefined>()
+const clearing = ref(false)
 
 const activeProject = computed(() => projects.value.find(project => project.id === projectId.value))
 const currentScope = computed<MemoryScope>(() => sessionId.value ? { scope: 'dialogue', sessionId: sessionId.value } : projectId.value ? { scope: 'project', projectId: projectId.value } : { scope: 'global' })
 const clearCount = computed(() => clearLayer.value === 'working'
   ? statistics.value?.stored.working.entries ?? 0
   : clearLayer.value === 'long_term'
-    ? statistics.value?.stored.longTerm.facts ?? 0
+    ? globalStatistics.value?.stored.longTerm.facts ?? 0
     : statistics.value?.stored.shortTerm.messages ?? 0)
 
 function setQuery(next: Partial<{ layer: Layer; projectId?: string; sessionId?: string }>): void {
@@ -73,14 +76,16 @@ async function loadData(): Promise<void> {
       session.value = null
       pendingClear.value = undefined
     }
-    const [loadedBudgets, loadedPreview, loadedStatistics] = await Promise.all([
+    const [loadedBudgets, loadedPreview, loadedStatistics, loadedGlobalStatistics] = await Promise.all([
       memory.loadBudgets(),
       memory.loadPreview(projectId.value),
       memory.loadStatistics(currentScope.value),
+      memory.loadStatistics({ scope: 'global' }),
     ])
     budgets.value = loadedBudgets
     preview.value = loadedPreview
     statistics.value = loadedStatistics
+    globalStatistics.value = loadedGlobalStatistics
     const workingPage = projectId.value ? await memory.listWorking(projectId.value, { text: search.value || undefined, category: layer.value === 'working' ? category.value || undefined : undefined }) : { items: [], nextCursor: undefined }
     const longTermPage = await memory.listLongTerm({ projectId: projectId.value, text: search.value || undefined, category: layer.value === 'long_term' ? category.value || undefined : undefined })
     workingItems.value = workingPage.items
@@ -96,6 +101,7 @@ async function loadData(): Promise<void> {
 
 async function chooseLayer(next: Layer): Promise<void> {
   layer.value = next
+  category.value = ''
   setQuery({ layer: next })
 }
 
@@ -150,10 +156,13 @@ async function deleteEntry(entry: WorkingMemoryEntry | LongTermFact): Promise<vo
 function openClear(next: Layer): void {
   clearLayer.value = next
   pendingClear.value = undefined
+  activeClearOperationId.value = undefined
   clearOpen.value = true
 }
 
 async function confirmClear(): Promise<void> {
+  if (clearing.value) return
+  clearing.value = true
   try {
     if (clearLayer.value === 'working') {
       if (!projectId.value) return
@@ -162,13 +171,17 @@ async function confirmClear(): Promise<void> {
       await memory.clearLongTerm()
     } else {
       if (!sessionId.value) return
-      const result = await memory.clearHistory(sessionId.value, pendingClear.value?.operationId ?? crypto.randomUUID())
+      const operationId = pendingClear.value?.operationId ?? activeClearOperationId.value ?? crypto.randomUUID()
+      activeClearOperationId.value = operationId
+      const result = await memory.clearHistory(sessionId.value, operationId)
       if (result.status !== 'completed') { pendingClear.value = result; return }
       pendingClear.value = undefined
+      activeClearOperationId.value = undefined
     }
     clearOpen.value = false
     await loadData()
   } catch (caughtError) { error.value = caughtError instanceof Error ? caughtError.message : 'Не удалось очистить слой памяти.' }
+  finally { clearing.value = false }
 }
 
 async function detachProject(): Promise<void> {
@@ -196,6 +209,7 @@ function loadMore(): void {
 }
 
 watch([search, category], () => { void loadData() })
+watch(layer, () => { category.value = '' })
 watch(() => route.query, () => {
   layer.value = route.query.layer === 'working' || route.query.layer === 'long_term' || route.query.layer === 'short_term' ? route.query.layer : layer.value
   projectId.value = typeof route.query.projectId === 'string' ? route.query.projectId : undefined

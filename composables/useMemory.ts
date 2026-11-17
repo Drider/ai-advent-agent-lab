@@ -40,7 +40,10 @@ export function useMemory() {
   const clearLongTerm = () => $fetch<{ deleted: number }>('/api/memory/long-term/clear', { method: 'POST' })
   const detachProject = (projectId: string) => $fetch<{ detached: number }>('/api/memory/long-term/detach-project', { method: 'POST', body: { projectId } })
   const clearHistory = (sessionId: string, operationId: string) => $fetch<HistoryClearResult>(`/api/sessions/${sessionId}/history/clear`, { method: 'POST', body: { operationId } })
-  const loadPendingHistoryClear = (sessionId: string) => $fetch<HistoryClearResult | null>(`/api/sessions/${sessionId}/history/clear`)
+  const loadPendingHistoryClear = async (sessionId: string): Promise<HistoryClearResult | null> => {
+    const result = await $fetch<HistoryClearResult | null>(`/api/sessions/${sessionId}/history/clear`)
+    return result ?? null
+  }
 
   return {
     loadProjects,

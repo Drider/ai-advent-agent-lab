@@ -281,16 +281,16 @@ export function createTurnRepository(db: Database.Database) {
     stepIndex: number
     name: string
     input: unknown
-  }): void {
-    transaction(() => {
+  }): boolean {
+    return transaction(() => {
       const turn = getTurnRow(input.turnId)
       if (turn.status !== 'running') {
-        return
+        return false
       }
       const existing = db.prepare('SELECT 1 FROM tool_executions WHERE turn_id = ? AND tool_call_id = ?')
         .get(input.turnId, input.toolCallId)
       if (existing) {
-        return
+        return false
       }
       const timestamp = now()
       db.prepare(`
@@ -298,6 +298,7 @@ export function createTurnRepository(db: Database.Database) {
           (id, turn_id, step_index, tool_call_id, tool_name, status, input_json, output_json, error_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'running', ?, NULL, NULL, ?, ?)
       `).run(randomUUID(), input.turnId, input.stepIndex, input.toolCallId, input.name, JSON.stringify(input.input), timestamp, timestamp)
+      return true
     })
   }
 

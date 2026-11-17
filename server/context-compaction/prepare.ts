@@ -123,22 +123,25 @@ export async function prepareSessionContext(input: {
           userMessage: stored.message,
           abortSignal: input.abortSignal,
         })
-        // History may be cleared while the maintenance model is running. Do
-        // not resurrect a deleted source message or its extracted facts.
-        if (!sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) {
-          throw new Error('conversation history was cleared while updating Sticky Facts')
-        }
-        const saved = factsRepository.saveFactsUpdate({
-          sessionId: input.sessionId,
-          sourceMessageId: stored.message.id,
-          throughMessagePosition: stored.position,
-          facts: update.facts,
-          usage: update.usage,
-          costRub: update.usage === undefined ? undefined : calculateChatCost(update.usage, input.pricing),
-        })
+        // History may be cleared while the maintenance model is running. The
+        // immediate transaction keeps the source check and write together so
+        // a completed clear can never be followed by a resurrected fact.
+        const saved = input.db.transaction(() => {
+          if (!sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) return undefined
+          return factsRepository.saveFactsUpdate({
+            sessionId: input.sessionId,
+            sourceMessageId: stored.message.id,
+            throughMessagePosition: stored.position,
+            facts: update.facts,
+            usage: update.usage,
+            costRub: update.usage === undefined ? undefined : calculateChatCost(update.usage, input.pricing),
+          })
+        }).immediate()
+        if (!saved) throw new Error('conversation history was cleared while updating Sticky Facts')
         facts = saved.facts
       } catch (error) {
-        if (sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) {
+        input.db.transaction(() => {
+          if (!sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) return
           factsRepository.saveFactsUpdate({
             sessionId: input.sessionId,
             sourceMessageId: stored.message.id,
@@ -147,7 +150,7 @@ export async function prepareSessionContext(input: {
             status: 'failed',
             error: error instanceof Error ? error.message : 'facts update failed',
           })
-        }
+        }).immediate()
         throw error
       }
     }

@@ -103,7 +103,7 @@ const {
     pendingSend = null
     const message = chatError.message
     continuationError.value = message
-    if (!failed || !chatMessages || !/memory|budget/iu.test(message)) return
+    if (!failed || !chatMessages || !/memory.{0,80}budget|working memory|long[- ]term memory/iu.test(message)) return
     const optimistic = [...chatMessages.value].reverse().find(item => item.role === 'user' && !failed.baselineIds.has(item.id) && getMessageText(item) === failed.text)
     if (!optimistic) return
     chatMessages.value = chatMessages.value.filter(item => item.id !== optimistic.id)

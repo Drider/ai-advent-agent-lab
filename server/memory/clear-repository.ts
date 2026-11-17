@@ -54,7 +54,10 @@ export function createHistoryClearRepository(db: Database.Database) {
   function begin(sessionId: string, operationId: string): HistoryClearResult & { oldRunLogId: string; newRunLogId: string } {
     return db.transaction(() => {
       const existing = findOperation(db, operationId)
-      if (existing) return toResult(existing)
+      if (existing) {
+        if (existing.session_id !== sessionId) throw new MemoryError('INVALID_INPUT', 'history cleanup operation belongs to another session')
+        return toResult(existing)
+      }
       const session = db.prepare('SELECT id, run_log_id, status FROM sessions WHERE id = ?').get(sessionId) as { id: string; run_log_id: string; status: string } | undefined
       if (!session) throw new MemoryError('NOT_FOUND', 'session was not found')
       const other = db.prepare(`SELECT 1 FROM history_clear_operations WHERE session_id = ? AND status <> 'completed' LIMIT 1`).get(sessionId)
