@@ -17,7 +17,12 @@ function now(): string {
 function makeRunLogId(db: Database.Database, timestamp = Date.now()): string {
   let cursor = timestamp
   let value = new Date(cursor).toISOString()
-  while (db.prepare('SELECT 1 FROM sessions WHERE run_log_id = ?').get(value)) {
+  const isReserved = db.prepare(`
+    SELECT 1 FROM sessions WHERE run_log_id = ?
+    UNION ALL SELECT 1 FROM history_clear_operations WHERE old_run_log_id = ? OR new_run_log_id = ?
+    LIMIT 1
+  `)
+  while (isReserved.get(value, value, value)) {
     cursor += 1
     value = new Date(cursor).toISOString()
   }

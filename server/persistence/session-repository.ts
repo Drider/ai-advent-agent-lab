@@ -297,9 +297,13 @@ export function createSessionRepository(db: Database.Database) {
     const id = randomUUID()
     let timestamp = Date.now()
     let runLogId = new Date(timestamp).toISOString()
-    const hasRunLogId = db.prepare('SELECT 1 FROM sessions WHERE run_log_id = ?')
+    const hasRunLogId = db.prepare(`
+      SELECT 1 FROM sessions WHERE run_log_id = ?
+      UNION ALL SELECT 1 FROM history_clear_operations WHERE old_run_log_id = ? OR new_run_log_id = ?
+      LIMIT 1
+    `)
 
-    while (hasRunLogId.get(runLogId)) {
+    while (hasRunLogId.get(runLogId, runLogId, runLogId)) {
       timestamp += 1
       runLogId = new Date(timestamp).toISOString()
     }

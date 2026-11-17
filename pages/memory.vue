@@ -40,7 +40,11 @@ const pendingClear = ref<HistoryClearResult | undefined>()
 
 const activeProject = computed(() => projects.value.find(project => project.id === projectId.value))
 const currentScope = computed<MemoryScope>(() => sessionId.value ? { scope: 'dialogue', sessionId: sessionId.value } : projectId.value ? { scope: 'project', projectId: projectId.value } : { scope: 'global' })
-const clearCount = computed(() => clearLayer.value === 'working' ? workingItems.value.length : clearLayer.value === 'long_term' ? longTermItems.value.length : session.value?.messages.length ?? 0)
+const clearCount = computed(() => clearLayer.value === 'working'
+  ? statistics.value?.stored.working.entries ?? 0
+  : clearLayer.value === 'long_term'
+    ? statistics.value?.stored.longTerm.facts ?? 0
+    : statistics.value?.stored.shortTerm.messages ?? 0)
 
 function setQuery(next: Partial<{ layer: Layer; projectId?: string; sessionId?: string }>): void {
   const query = {
@@ -60,8 +64,14 @@ async function loadData(): Promise<void> {
     if (sessionId.value) {
       session.value = await $fetch<SessionDetail>(`/api/sessions/${sessionId.value}`)
       if (!projectId.value && session.value.projectId) projectId.value = session.value.projectId
+      pendingClear.value = (await memory.loadPendingHistoryClear(sessionId.value)) ?? undefined
+      if (pendingClear.value) {
+        clearLayer.value = 'short_term'
+        clearOpen.value = true
+      }
     } else {
       session.value = null
+      pendingClear.value = undefined
     }
     const [loadedBudgets, loadedPreview, loadedStatistics] = await Promise.all([
       memory.loadBudgets(),
@@ -71,8 +81,8 @@ async function loadData(): Promise<void> {
     budgets.value = loadedBudgets
     preview.value = loadedPreview
     statistics.value = loadedStatistics
-    const workingPage = projectId.value ? await memory.listWorking(projectId.value, { text: search.value || undefined, category: category.value || undefined }) : { items: [], nextCursor: undefined }
-    const longTermPage = await memory.listLongTerm({ projectId: projectId.value, text: search.value || undefined, category: category.value || undefined })
+    const workingPage = projectId.value ? await memory.listWorking(projectId.value, { text: search.value || undefined, category: layer.value === 'working' ? category.value || undefined : undefined }) : { items: [], nextCursor: undefined }
+    const longTermPage = await memory.listLongTerm({ projectId: projectId.value, text: search.value || undefined, category: layer.value === 'long_term' ? category.value || undefined : undefined })
     workingItems.value = workingPage.items
     longTermItems.value = longTermPage.items
     workingCursor.value = workingPage.nextCursor
@@ -152,8 +162,9 @@ async function confirmClear(): Promise<void> {
       await memory.clearLongTerm()
     } else {
       if (!sessionId.value) return
-      const result = await memory.clearHistory(sessionId.value, crypto.randomUUID())
+      const result = await memory.clearHistory(sessionId.value, pendingClear.value?.operationId ?? crypto.randomUUID())
       if (result.status !== 'completed') { pendingClear.value = result; return }
+      pendingClear.value = undefined
     }
     clearOpen.value = false
     await loadData()
@@ -173,11 +184,11 @@ function handleSaved(): void {
 function loadMore(): void {
   void (async () => {
     if (layer.value === 'working' && projectId.value && workingCursor.value) {
-      const page = await memory.listWorking(projectId.value, { cursor: workingCursor.value, text: search.value || undefined, category: category.value || undefined })
+      const page = await memory.listWorking(projectId.value, { cursor: workingCursor.value, text: search.value || undefined, category: layer.value === 'working' ? category.value || undefined : undefined })
       workingItems.value = [...workingItems.value, ...page.items]
       workingCursor.value = page.nextCursor
     } else if (layer.value === 'long_term' && longTermCursor.value) {
-      const page = await memory.listLongTerm({ cursor: longTermCursor.value, projectId: projectId.value, text: search.value || undefined, category: category.value || undefined })
+      const page = await memory.listLongTerm({ cursor: longTermCursor.value, projectId: projectId.value, text: search.value || undefined, category: layer.value === 'long_term' ? category.value || undefined : undefined })
       longTermItems.value = [...longTermItems.value, ...page.items]
       longTermCursor.value = page.nextCursor
     }
@@ -221,7 +232,8 @@ onMounted(() => { void loadData() })
           <p class="memory-muted">Сводки и Sticky Facts создаются автоматически и не редактируются как подтверждённые факты.</p>
         </section>
         <MemoryRecordList v-else :layer="layer === 'working' ? 'working' : 'long_term'" :items="layer === 'working' ? workingItems : longTermItems" :loading="loading" :error="error" :has-more="layer === 'working' ? Boolean(workingCursor) : Boolean(longTermCursor)" @edit="editEntry" @delete="deleteEntry" @toggle="toggleEntry" @load-more="loadMore" />
-        <div v-if="layer === 'long_term' && projectId" class="memory-page__footer-actions"><button class="memory-button" type="button" @click="detachProject">Отключить факты от проекта</button><button class="memory-button memory-button--danger" type="button" @click="openClear('long_term')">Очистить долговременный слой</button></div>
+        <div v-if="layer === 'long_term' && projectId" class="memory-page__footer-actions"><button class="memory-button" type="button" @click="detachProject">Отключить факты от проекта</button></div>
+        <div v-else-if="layer === 'long_term'" class="memory-page__footer-actions"><button class="memory-button memory-button--danger" type="button" @click="openClear('long_term')">Очистить долговременный слой</button></div>
         <div v-else-if="layer === 'working' && projectId" class="memory-page__footer-actions"><button class="memory-button memory-button--danger" type="button" @click="openClear('working')">Очистить рабочий слой проекта</button></div>
       </section>
     </div>

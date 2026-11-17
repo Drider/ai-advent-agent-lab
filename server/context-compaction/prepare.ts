@@ -65,6 +65,10 @@ function findAttempt(repository: ReturnType<typeof createCompactionRepository>, 
   return repository.listAttempts(sessionId).find(attempt => attempt.id === attemptId)
 }
 
+function sourceMessageStillExists(db: Database.Database, sessionId: string, messageId: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM messages WHERE session_id = ? AND id = ?').get(sessionId, messageId))
+}
+
 export async function prepareSessionContext(input: {
   db: Database.Database
   sessionId: string
@@ -119,6 +123,11 @@ export async function prepareSessionContext(input: {
           userMessage: stored.message,
           abortSignal: input.abortSignal,
         })
+        // History may be cleared while the maintenance model is running. Do
+        // not resurrect a deleted source message or its extracted facts.
+        if (!sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) {
+          throw new Error('conversation history was cleared while updating Sticky Facts')
+        }
         const saved = factsRepository.saveFactsUpdate({
           sessionId: input.sessionId,
           sourceMessageId: stored.message.id,
@@ -129,14 +138,16 @@ export async function prepareSessionContext(input: {
         })
         facts = saved.facts
       } catch (error) {
-        factsRepository.saveFactsUpdate({
-          sessionId: input.sessionId,
-          sourceMessageId: stored.message.id,
-          throughMessagePosition: stored.position,
-          facts,
-          status: 'failed',
-          error: error instanceof Error ? error.message : 'facts update failed',
-        })
+        if (sourceMessageStillExists(input.db, input.sessionId, stored.message.id)) {
+          factsRepository.saveFactsUpdate({
+            sessionId: input.sessionId,
+            sourceMessageId: stored.message.id,
+            throughMessagePosition: stored.position,
+            facts,
+            status: 'failed',
+            error: error instanceof Error ? error.message : 'facts update failed',
+          })
+        }
         throw error
       }
     }

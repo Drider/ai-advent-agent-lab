@@ -52,6 +52,34 @@ function loadHistory(db: Database.Database, sessionId: string): UIMessage[] {
   })
 }
 
+function loadWorkingEntries(db: Database.Database, projectId: string): WorkingMemoryEntry[] {
+  const repository = createWorkingMemoryRepository(db)
+  const entries: WorkingMemoryEntry[] = []
+  let cursor: string | undefined
+  do {
+    const page = repository.list(projectId, { limit: 100, ...(cursor === undefined ? {} : { cursor }) })
+    entries.push(...page.items)
+    cursor = page.nextCursor
+  } while (cursor !== undefined)
+  return entries.filter(entry => entry.enabled)
+}
+
+function loadLongTermFacts(db: Database.Database, projectId: string | undefined): LongTermFact[] {
+  const repository = createLongTermMemoryRepository(db)
+  const facts: LongTermFact[] = []
+  let cursor: string | undefined
+  do {
+    const page = repository.list({
+      limit: 100,
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(cursor === undefined ? {} : { cursor }),
+    })
+    facts.push(...page.items)
+    cursor = page.nextCursor
+  } while (cursor !== undefined)
+  return facts.filter(fact => fact.enabled && (projectId !== undefined || fact.global))
+}
+
 function selectMemory(db: Database.Database, projectId: string | undefined): {
   working: WorkingMemoryEntry[]
   longTerm: LongTermFact[]
@@ -64,8 +92,8 @@ function selectMemory(db: Database.Database, projectId: string | undefined): {
   const budgets = createMemorySettingsRepository(db).get()
   const working = projectId === undefined
     ? []
-    : createWorkingMemoryRepository(db).list(projectId, { limit: 100 }).items.filter(entry => entry.enabled)
-  const longTerm = createLongTermMemoryRepository(db).list({ projectId, limit: 100 }).items.filter(fact => fact.enabled)
+    : loadWorkingEntries(db, projectId)
+  const longTerm = loadLongTermFacts(db, projectId)
   const workingMessage = asMemoryMessage(
     `memory-selection-working-${randomUUID()}`,
     'working',

@@ -195,7 +195,15 @@ export function createLongTermMemoryRepository(db: Database.Database) {
 
   function detachProject(projectId: string): number {
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new MemoryError('NOT_FOUND', 'project was not found')
-    return db.prepare('DELETE FROM project_long_term_facts WHERE project_id = ?').run(projectId).changes
+    const timestamp = new Date().toISOString()
+    const transaction = db.transaction(() => {
+      const factIds = db.prepare('SELECT fact_id FROM project_long_term_facts WHERE project_id = ?').all(projectId) as Array<{ fact_id: string }>
+      const result = db.prepare('DELETE FROM project_long_term_facts WHERE project_id = ?').run(projectId)
+      const bump = db.prepare('UPDATE long_term_facts SET revision = revision + 1, updated_at = ? WHERE id = ?')
+      for (const fact of factIds) bump.run(timestamp, fact.fact_id)
+      return result.changes
+    })
+    return transaction.immediate()
   }
 
   return { list, create, update, remove, clear, detachProject }

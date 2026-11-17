@@ -16,6 +16,7 @@ const props = defineProps<{
   showCost: boolean
   showDetailedStatistics?: boolean
   operationError?: string | null
+  historyClearPending?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,6 +33,8 @@ const activeRequestId = shallowRef<string | null>(null)
 const lastKnownTurnId = shallowRef(props.session.lastTurn?.id ?? null)
 const lastTurnStatus = shallowRef<ChatSessionStatus>(props.session.lastTurn?.status ?? props.session.status)
 const continuationError = shallowRef<string | null>(null)
+let pendingSend: { text: string; baselineIds: Set<string> } | null = null
+let chatMessages: { value: ChatUIMessage[] } | undefined
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
@@ -95,15 +98,28 @@ const {
   id: props.session.id,
   messages: props.session.messages,
   transport,
+  onError: chatError => {
+    const failed = pendingSend
+    pendingSend = null
+    const message = chatError.message
+    continuationError.value = message
+    if (!failed || !chatMessages || !/memory|budget/iu.test(message)) return
+    const optimistic = [...chatMessages.value].reverse().find(item => item.role === 'user' && !failed.baselineIds.has(item.id) && getMessageText(item) === failed.text)
+    if (!optimistic) return
+    chatMessages.value = chatMessages.value.filter(item => item.id !== optimistic.id)
+    draft.value = failed.text
+  },
   onFinish: ({ isAbort, isError }) => {
     const reachedStepLimit = messages.value.at(-1)?.metadata?.stopReason === 'step_limit'
     lastTurnStatus.value = isAbort
       ? lastTurnStatus.value === 'stopped' ? 'stopped' : 'interrupted'
       : isError ? 'failed' : reachedStepLimit ? 'interrupted' : 'completed'
     activeRequestId.value = null
+    pendingSend = null
     emit('updated')
   },
 })
+chatMessages = messages
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
 const dialogueTotals = computed(() => dialogueCostTotals(messages.value, props.session.compactionAttempts))
@@ -170,13 +186,15 @@ watch(() => props.session.lastTurn, turn => {
 async function handleSubmit(event?: Event): Promise<void> {
   event?.preventDefault()
   const text = draft.value.trim()
-  if (!text || isBusy.value) return
+  if (!text || isBusy.value || props.historyClearPending) return
   clearError()
   continuationError.value = null
+  pendingSend = { text, baselineIds: new Set(messages.value.map(message => message.id)) }
   draft.value = ''
   try {
     await sendMessage({ text })
   } catch (caughtError) {
+    pendingSend = null
     continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось отправить сообщение'
     draft.value = text
     emit('updated')
@@ -199,7 +217,7 @@ function handleComposerClick(event: MouseEvent): void {
 
 async function handleContinue(): Promise<void> {
   const sourceTurnId = lastKnownTurnId.value ?? props.session.lastTurn?.id
-  if (!sourceTurnId || isBusy.value || needsReview.value) return
+  if (!sourceTurnId || isBusy.value || needsReview.value || props.historyClearPending) return
   clearError()
   continuationError.value = null
   lastTurnStatus.value = 'running'
@@ -373,11 +391,11 @@ function dismissError(): void {
     </div>
 
     <form class="chat-composer" @click="handleComposerClick" @submit="handleSubmit">
-      <UTextarea v-model="draft" :disabled="isBusy" :rows="3" autoresize size="xl" variant="none" placeholder="Напишите сообщение…" aria-label="Сообщение" @keydown="handleKeydown" />
+      <UTextarea v-model="draft" :disabled="isBusy || props.historyClearPending" :rows="3" autoresize size="xl" variant="none" :placeholder="props.historyClearPending ? 'Очистка истории ожидает завершения…' : 'Напишите сообщение…'" aria-label="Сообщение" @keydown="handleKeydown" />
       <div class="chat-composer__footer">
         <span class="chat-composer__hint">Enter — отправить · Shift+Enter — новая строка</span>
         <UButton v-if="isBusy" type="button" color="neutral" icon="i-lucide-square" aria-label="Остановить генерацию" @click="handleStop" />
-        <UButton v-else type="submit" class="chat-composer__submit" color="neutral" variant="solid" aria-label="Отправить сообщение" :disabled="!draft.trim()"><UIcon name="i-lucide-arrow-up" class="chat-composer__submit-icon" aria-hidden="true" /></UButton>
+        <UButton v-else type="submit" class="chat-composer__submit" color="neutral" variant="solid" aria-label="Отправить сообщение" :disabled="!draft.trim() || props.historyClearPending"><UIcon name="i-lucide-arrow-up" class="chat-composer__submit-icon" aria-hidden="true" /></UButton>
       </div>
     </form>
   </main>

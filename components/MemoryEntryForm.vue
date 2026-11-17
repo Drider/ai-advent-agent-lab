@@ -28,23 +28,25 @@ const projectIds = ref<string[]>([])
 const saving = ref(false)
 const error = ref<string | null>(null)
 const isEditing = computed(() => Boolean(props.entry))
+const activeLayer = ref(props.layer)
 
 function reset(): void {
   const entry = props.entry
+  activeLayer.value = props.layer
   key.value = entry?.key ?? ''
   value.value = entry?.value ?? props.initialText ?? ''
   enabled.value = entry?.enabled ?? true
-  if (props.layer === 'working') {
+  if (activeLayer.value === 'working') {
     workingCategory.value = (entry as WorkingMemoryEntry | undefined)?.category ?? 'note'
   } else {
     longTermCategory.value = (entry as LongTermFact | undefined)?.category ?? 'knowledge'
     global.value = (entry as LongTermFact | undefined)?.global ?? false
-    projectIds.value = [...((entry as LongTermFact | undefined)?.projectIds ?? (props.projectId ? [props.projectId] : []))]
+    projectIds.value = [...((entry as LongTermFact | undefined)?.projectIds ?? [])]
   }
   error.value = null
 }
 
-watch(() => props.open, open => { if (open) reset() })
+watch(() => [props.open, props.layer], ([open]) => { if (open) reset() })
 watch(() => props.entry, reset)
 
 async function save(): Promise<void> {
@@ -52,14 +54,14 @@ async function save(): Promise<void> {
     error.value = 'Укажите ключ и значение.'
     return
   }
-  if (props.layer === 'working' && !props.projectId && !props.entry) {
+  if (activeLayer.value === 'working' && !props.projectId && !props.entry) {
     error.value = 'Для рабочей памяти выберите проект.'
     return
   }
   saving.value = true
   error.value = null
   try {
-    if (props.layer === 'working') {
+    if (activeLayer.value === 'working') {
       const entry = props.entry as WorkingMemoryEntry | undefined
       const result = await memory.saveWorking(entry
         ? { id: entry.id, category: workingCategory.value, key: key.value, value: value.value, enabled: enabled.value, expectedRevision: entry.revision }
@@ -85,18 +87,19 @@ async function save(): Promise<void> {
     <form class="memory-form" role="dialog" aria-modal="true" @submit.prevent="save">
       <header class="memory-form__header">
         <div>
-          <p class="memory-form__eyebrow">{{ props.layer === 'working' ? 'Рабочая память' : 'Долговременная память' }}</p>
+          <p class="memory-form__eyebrow">{{ activeLayer === 'working' ? 'Рабочая память' : 'Долговременная память' }}</p>
           <h2>{{ isEditing ? 'Изменить запись' : 'Сохранить в память' }}</h2>
         </div>
         <button type="button" class="memory-form__close" aria-label="Закрыть" @click="emit('cancel')">×</button>
       </header>
       <div class="memory-form__body">
         <p class="memory-form__hint">Запись попадёт в контекст только по правилам выбранного слоя. Сохранение выполняется вручную и не вызывает модель.</p>
-        <label><span>Категория</span><select v-if="props.layer === 'working'" v-model="workingCategory"><option value="goal">Цель</option><option value="constraint">Ограничение</option><option value="state">Состояние</option><option value="result">Результат</option><option value="note">Заметка</option></select><select v-else v-model="longTermCategory"><option value="profile">Профиль</option><option value="decision">Решение</option><option value="knowledge">Знание</option></select></label>
+        <label v-if="!isEditing"><span>Слой</span><select v-model="activeLayer"><option value="working">Рабочая память</option><option value="long_term">Долговременная память</option></select></label>
+        <label><span>Категория</span><select v-if="activeLayer === 'working'" v-model="workingCategory"><option value="goal">Цель</option><option value="constraint">Ограничение</option><option value="state">Состояние</option><option value="result">Результат</option><option value="note">Заметка</option></select><select v-else v-model="longTermCategory"><option value="profile">Профиль</option><option value="decision">Решение</option><option value="knowledge">Знание</option></select></label>
         <label><span>Ключ</span><input v-model="key" maxlength="80" autocomplete="off" placeholder="Например, цель проекта"></label>
         <label><span>Значение</span><textarea v-model="value" maxlength="10000" rows="6" placeholder="Короткий подтверждённый факт"></textarea></label>
         <label class="memory-form__toggle"><input v-model="enabled" type="checkbox"><span>Включать в контекст</span></label>
-        <template v-if="props.layer === 'long_term'">
+        <template v-if="activeLayer === 'long_term'">
           <label class="memory-form__toggle"><input v-model="global" type="checkbox"><span>Глобальный факт для всех проектов</span></label>
           <label><span>Проекты (ID через запятую)</span><input :value="projectIds.join(', ')" autocomplete="off" placeholder="Можно оставить пустым" @input="projectIds = ($event.target as HTMLInputElement).value.split(',').map(item => item.trim()).filter(Boolean)"></label>
           <p class="memory-form__hint">Без глобального флага и подключённых проектов факт хранится, но не попадёт в промпт.</p>

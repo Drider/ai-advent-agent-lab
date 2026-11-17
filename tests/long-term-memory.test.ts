@@ -39,8 +39,8 @@ describe('long-term memory', () => {
     const fact = repository.create({ category: 'profile', key: 'language', value: 'Russian', global: true, projectIds: [alpha.id, beta.id] })
     expect(repository.detachProject(alpha.id)).toBe(1)
     expect(repository.list({ projectId: alpha.id }).items).toEqual([expect.objectContaining({ id: fact.id })])
-    expect(repository.update(fact.id, { value: 'Русский', expectedRevision: 0 }).value).toBe('Русский')
-    expect(() => repository.update(fact.id, { value: 'stale', expectedRevision: 0 })).toThrow(MemoryError)
+    expect(repository.update(fact.id, { value: 'Русский', expectedRevision: 1 }).value).toBe('Русский')
+    expect(() => repository.update(fact.id, { value: 'stale', expectedRevision: 1 })).toThrow(MemoryError)
   })
 
   it('clears only long-term facts and nulls deleted message sources', () => {

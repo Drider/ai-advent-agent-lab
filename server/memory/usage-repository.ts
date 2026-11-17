@@ -54,6 +54,7 @@ export function createMemoryUsageRepository(db: Database.Database) {
     turnId: string
     snapshot: MemorySnapshot
     shortTerm: MemoryUsageNumbers
+    requireTurn?: boolean
   }): MemoryUsageEvent {
     const existing = findBySnapshot(input.snapshot.id)
     if (existing) return existing
@@ -64,6 +65,7 @@ export function createMemoryUsageRepository(db: Database.Database) {
     const sessionExists = db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(input.snapshot.sessionId)
     if (!sessionExists) throw new Error('session was not found')
     const turnExists = db.prepare('SELECT 1 FROM turns WHERE id = ?').get(input.turnId)
+    if (!turnExists && input.requireTurn === true) throw new Error('turn no longer exists')
     db.prepare(`
       INSERT INTO memory_usage_events
         (id, snapshot_id, session_id, project_id, turn_id, prepared_at, context_cleared,

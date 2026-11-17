@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { LanguageModelUsage } from 'ai'
 
@@ -286,8 +286,13 @@ export async function appendRunLogEntry(
       log.requests.push(projectEntry(entry))
 
       const temporaryPath = `${filePath}.${process.pid}.${temporaryFileCounter++}.tmp`
-      await writeFile(temporaryPath, `${JSON.stringify(log, null, 2)}\n`, 'utf8')
-      await rename(temporaryPath, filePath)
+      try {
+        await writeFile(temporaryPath, `${JSON.stringify(log, null, 2)}\n`, 'utf8')
+        await rename(temporaryPath, filePath)
+      } catch (error) {
+        await unlink(temporaryPath).catch(() => undefined)
+        throw error
+      }
     })
 
   pendingWrites.set(filePath, nextWrite)
@@ -315,6 +320,14 @@ export async function closeAndDeleteRunLog(
       if (isRecord(error) && error.code === 'ENOENT') return
       throw error
     })
+    const temporaryPrefix = `run-${normalizedRunId}.`
+    const names = await readdir(directory).catch((error: unknown) => {
+      if (isRecord(error) && error.code === 'ENOENT') return [] as string[]
+      throw error
+    })
+    await Promise.all(names
+      .filter(name => name.startsWith(temporaryPrefix) && name.endsWith('.tmp'))
+      .map(name => unlink(join(directory, name)).catch(() => undefined)))
   } finally {
     pendingWrites.delete(filePath)
   }

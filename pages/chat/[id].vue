@@ -45,6 +45,7 @@ const operationError = shallowRef<string | null>(null)
 const modelSaveError = shallowRef<string | null>(null)
 const deleteError = shallowRef<string | null>(null)
 const projectError = shallowRef<string | null>(null)
+const historyClearPending = shallowRef(false)
 const projects = shallowRef<Project[]>([])
 const projectFilter = shallowRef<string | undefined>(typeof route.query.projectId === 'string' ? route.query.projectId : undefined)
 const memoryFormOpen = shallowRef(false)
@@ -69,6 +70,9 @@ async function loadSession(): Promise<void> {
     const loadedSession = await $fetch<SessionDetail>(`/api/sessions/${requestedId}`)
     if (sessionId.value !== requestedId) return
     session.value = loadedSession
+    const pendingClear = await memory.loadPendingHistoryClear(requestedId)
+    historyClearPending.value = pendingClear !== null
+    if (pendingClear) operationError.value = 'Очистка истории этого диалога ожидает завершения. Откройте «Память», чтобы повторить операцию.'
     modelId.value = loadedSession.modelId ?? loadedSession.lastTurn?.modelId ?? defaultModel
     contextStrategy.value = loadedSession.contextStrategy
     compactionEnabled.value = loadedSession.contextStrategy.strategy === 'summary'
@@ -76,6 +80,7 @@ async function loadSession(): Promise<void> {
   } catch (caughtError) {
     if (sessionId.value !== requestedId) return
     session.value = null
+    historyClearPending.value = false
     error.value = caughtError instanceof Error ? caughtError.message : 'Сессия не найдена'
   } finally {
     if (sessionId.value === requestedId) loading.value = false
@@ -282,6 +287,9 @@ async function handleUpdated(): Promise<void> {
     }).catch(() => {
       if (sessionId.value === id) operationError.value = 'Не удалось обновить состояние диалога. Перезагрузите страницу, чтобы проверить результат.'
     }),
+    memory.loadPendingHistoryClear(id).then(pending => {
+      historyClearPending.value = pending !== null
+    }).catch(() => undefined),
     loadSessions(),
   ])
 }
@@ -479,6 +487,7 @@ watch(sessionId, () => {
       :compaction-threshold="compactionThreshold"
       :context-strategy="contextStrategy"
       :operation-error="operationError"
+      :history-clear-pending="historyClearPending"
       @new-session="handleNewSession"
       @updated="handleUpdated"
       @busy-change="workspaceBusy = $event"

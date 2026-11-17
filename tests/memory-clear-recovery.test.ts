@@ -40,4 +40,18 @@ describe('history clear recovery', () => {
     directories.push(directory)
     await expect(closeAndDeleteRunLog('2026-01-01T00:00:00.000Z', directory)).resolves.toBeUndefined()
   })
+
+  it('reserves distinct replacement log ids for multiple pending clears', () => {
+    const db = openChatDatabase(':memory:')
+    databases.push(db)
+    const sessions = createSessionRepository(db)
+    const first = sessions.createSession()
+    const second = sessions.createSession()
+    const repository = createHistoryClearRepository(db)
+
+    const firstOperation = repository.begin(first.id, randomUUID())
+    const secondOperation = repository.begin(second.id, randomUUID())
+
+    expect(secondOperation.newRunLogId).not.toBe(firstOperation.newRunLogId)
+  })
 })

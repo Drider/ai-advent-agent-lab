@@ -129,6 +129,7 @@ export default defineEventHandler(async (event) => {
     createMemoryUsageRepository(db).recordPrepared({
       turnId,
       snapshot: memorySnapshot,
+      requireTurn: true,
       shortTerm: {
         count: shortTermMessages.length,
         bytes: shortTermBytes,
@@ -140,7 +141,9 @@ export default defineEventHandler(async (event) => {
   }
 
   const diceRepository = createDiceRollRepository(db)
-  const runId = session.runLogId
+  // Read the log id after the turn is reserved. A concurrent history clear
+  // cannot rotate it while the running turn blocks that operation.
+  const runId = (db.prepare('SELECT run_log_id FROM sessions WHERE id = ?').get(request.sessionId) as { run_log_id: string }).run_log_id
   const abortSignal = event.web?.request?.signal
 
   try {

@@ -30,7 +30,12 @@ function toResult(row: OperationRow): HistoryClearResult & { oldRunLogId: string
 
 function nextRunLogId(db: Database.Database): string {
   let timestamp = Date.now()
-  while (db.prepare('SELECT 1 FROM sessions WHERE run_log_id = ?').get(new Date(timestamp).toISOString())) timestamp += 1
+  const isReserved = db.prepare(`
+    SELECT 1 FROM sessions WHERE run_log_id = ?
+    UNION ALL SELECT 1 FROM history_clear_operations WHERE old_run_log_id = ? OR new_run_log_id = ?
+    LIMIT 1
+  `)
+  while (isReserved.get(new Date(timestamp).toISOString(), new Date(timestamp).toISOString(), new Date(timestamp).toISOString())) timestamp += 1
   return new Date(timestamp).toISOString()
 }
 
@@ -97,6 +102,11 @@ export function createHistoryClearRepository(db: Database.Database) {
     return (db.prepare("SELECT * FROM history_clear_operations WHERE status <> 'completed' ORDER BY started_at ASC, id ASC").all() as OperationRow[]).map(toResult)
   }
 
+  function pendingForSession(sessionId: string): HistoryClearResult | undefined {
+    const row = db.prepare("SELECT * FROM history_clear_operations WHERE session_id = ? AND status <> 'completed' ORDER BY started_at DESC, id DESC LIMIT 1").get(sessionId) as OperationRow | undefined
+    return row === undefined ? undefined : toResult(row)
+  }
+
   function complete(operationId: string): HistoryClearResult {
     return db.transaction(() => {
       const operation = findOperation(db, operationId)
@@ -118,6 +128,6 @@ export function createHistoryClearRepository(db: Database.Database) {
     return toResult(findOperation(db, operationId)!)
   }
 
-  return { begin, pending, complete, fail }
+  return { begin, pending, pendingForSession, complete, fail }
 }
 

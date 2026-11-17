@@ -77,4 +77,34 @@ describe('memory context snapshots', () => {
       expect(error).toMatchObject({ code: 'MEMORY_BUDGET_EXCEEDED', layer: 'working' })
     }
   })
+
+  it('loads enabled records beyond the management page and isolates project facts', () => {
+    const db = openChatDatabase(':memory:')
+    databases.push(db)
+    const projects = createProjectRepository(db)
+    const project = projects.create('Alpha')
+    const other = projects.create('Beta')
+    const sessions = createSessionRepository(db)
+    const projectSession = sessions.createSession({ projectId: project.id })
+    const unassignedSession = sessions.createSession()
+    const working = createWorkingMemoryRepository(db)
+    for (let index = 0; index < 100; index += 1) {
+      working.create({ projectId: project.id, category: 'note', key: `archived-${String(index).padStart(3, '0')}`, value: 'disabled', enabled: false })
+    }
+    const enabledEntry = working.create({ projectId: project.id, category: 'note', key: 'visible-after-page', value: 'keep' })
+
+    const longTerm = createLongTermMemoryRepository(db)
+    for (let index = 0; index < 100; index += 1) {
+      longTerm.create({ category: 'knowledge', key: `archived-${String(index).padStart(3, '0')}`, value: 'disabled', global: true, enabled: false })
+    }
+    const globalFact = longTerm.create({ category: 'knowledge', key: 'global-after-page', value: 'keep', global: true })
+    longTerm.create({ category: 'knowledge', key: 'project-only', value: 'hide', projectIds: [other.id] })
+
+    const projectSnapshot = createMemorySnapshot(db, projectSession.id)
+    expect(projectSnapshot.workingEntries.map(entry => entry.id)).toEqual([enabledEntry.id])
+    expect(projectSnapshot.longTermFacts.map(fact => fact.id)).toEqual([globalFact.id])
+
+    const unassignedSnapshot = createMemorySnapshot(db, unassignedSession.id)
+    expect(unassignedSnapshot.longTermFacts.map(fact => fact.id)).toEqual([globalFact.id])
+  })
 })
