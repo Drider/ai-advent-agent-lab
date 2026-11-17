@@ -5,6 +5,7 @@ export type MemoryErrorCode =
   | 'PROJECT_ALREADY_ASSIGNED'
   | 'SESSION_RUNNING'
   | 'HISTORY_CLEAR_PENDING'
+  | 'MEMORY_BUDGET_EXCEEDED'
 
 export class MemoryError extends Error {
   constructor(

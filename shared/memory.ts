@@ -55,6 +55,53 @@ export interface Project {
   updatedAt: string
 }
 
+export interface MemoryListQuery {
+  cursor?: string
+  limit?: number
+  text?: string
+  category?: string
+}
+
+export interface MemoryPage<T> {
+  items: T[]
+  nextCursor?: string
+}
+
+export interface CreateWorkingEntry extends MemorySource {
+  projectId: string
+  category: WorkingMemoryCategory
+  key: string
+  value: string
+  enabled?: boolean
+}
+
+export interface UpdateWorkingEntry {
+  category?: WorkingMemoryCategory
+  key?: string
+  value?: string
+  enabled?: boolean
+  expectedRevision: number
+}
+
+export interface CreateLongTermFact extends MemorySource {
+  category: LongTermMemoryCategory
+  key: string
+  value: string
+  enabled?: boolean
+  global?: boolean
+  projectIds?: string[]
+}
+
+export interface UpdateLongTermFact {
+  category?: LongTermMemoryCategory
+  key?: string
+  value?: string
+  enabled?: boolean
+  global?: boolean
+  projectIds?: string[]
+  expectedRevision: number
+}
+
 export function assertMemoryBudget(value: unknown, field: string): asserts value is number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < MEMORY_BUDGET_MIN || value > MEMORY_BUDGET_MAX) {
     throw new Error(`${field} must be an integer between ${MEMORY_BUDGET_MIN} and ${MEMORY_BUDGET_MAX}`)
