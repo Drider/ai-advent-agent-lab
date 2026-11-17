@@ -692,3 +692,15 @@ textarea {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Shared memory management surfaces. */
+.memory-card { border: 1px solid #dbe4ef; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 2px 10px rgb(15 23 42 / 3%); }
+.memory-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; margin-bottom: .8rem; }
+.memory-card__heading h2 { margin: 0; font-size: 1rem; }
+.memory-eyebrow { margin: 0 0 .2rem; color: #64748b; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+.memory-muted, .memory-empty { color: #64748b; font-size: .75rem; line-height: 1.45; }
+.memory-error { color: #b42318; font-size: .78rem; line-height: 1.4; }
+.memory-button { display: inline-flex; align-items: center; border: 1px solid #cbd5e1; border-radius: .45rem; padding: .5rem .7rem; color: #475569; background: #fff; font: inherit; font-size: .75rem; text-decoration: none; cursor: pointer; }
+.memory-button:disabled { cursor: not-allowed; opacity: .55; }
+.memory-button--primary { border-color: #1e293b; color: #fff; background: #1e293b; }
+.memory-button--danger { border-color: #fecaca; color: #b91c1c; background: #fff; }
