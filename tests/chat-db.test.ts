@@ -140,6 +140,40 @@ describe('chat database', () => {
     upgraded.close()
   })
 
+  it('upgrades a version 8 copy without losing dialogue history', async () => {
+    const filePath = await createDatabasePath()
+    const db = openChatDatabase(filePath)
+    const sessionId = insertSession(db)
+    insertMessage(db, sessionId, 0, JSON.stringify({ id: 'version-8-message', role: 'user', parts: [{ type: 'text', text: 'Старое сообщение' }] }))
+
+    db.pragma('foreign_keys = OFF')
+    for (const table of [
+      'memory_usage_events',
+      'history_clear_operations',
+      'cleared_requests',
+      'cleared_tool_calls',
+      'project_long_term_facts',
+      'long_term_facts',
+      'working_memory_entries',
+      'memory_settings',
+      'projects',
+    ]) db.exec(`DROP TABLE ${table}`)
+    db.exec('ALTER TABLE sessions DROP COLUMN project_id; PRAGMA user_version = 8')
+    db.close()
+
+    const upgraded = openChatDatabase(filePath)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(9)
+    expect(upgraded.prepare('SELECT payload_json FROM messages WHERE session_id = ?').get(sessionId)).toEqual({
+      payload_json: JSON.stringify({ id: 'version-8-message', role: 'user', parts: [{ type: 'text', text: 'Старое сообщение' }] }),
+    })
+    expect(upgraded.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId)).toEqual({ project_id: null })
+    expect(upgraded.prepare('SELECT working_tokens, long_term_tokens FROM memory_settings WHERE id = 1').get()).toEqual({
+      working_tokens: 2000,
+      long_term_tokens: 2000,
+    })
+    upgraded.close()
+  })
+
   it('rejects malformed JSON, duplicate positions, and broken foreign keys', async () => {
     const db = openChatDatabase(await createDatabasePath())
     const sessionId = insertSession(db)
