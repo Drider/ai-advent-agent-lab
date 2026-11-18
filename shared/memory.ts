@@ -71,6 +71,15 @@ export interface MemoryPage<T> {
 
 export type MemoryLayer = 'working' | 'long_term'
 
+export type MemoryExclusionReason = 'disabled' | 'not_relevant' | 'budget_exceeded'
+
+export interface MemoryExclusionRef {
+  id: string
+  revision: number
+  layer: MemoryLayer
+  reason: MemoryExclusionReason
+}
+
 export interface MemoryLayerPreview {
   count: number
   bytes: number
@@ -84,6 +93,7 @@ export interface MemoryPreview {
   projectId?: string
   working: MemoryLayerPreview
   longTerm: MemoryLayerPreview
+  exclusions: MemoryExclusionRef[]
 }
 
 export type MemorySelectionReason = 'working_project' | 'global' | 'project'
@@ -129,6 +139,7 @@ export interface MemoryUsageEvent {
   longTerm: MemoryUsageNumbers
   workingRefs: MemorySelectionRef[]
   longTermRefs: MemorySelectionRef[]
+  exclusions: MemoryExclusionRef[]
 }
 
 export type MemoryScope =

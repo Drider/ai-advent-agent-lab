@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openChatDatabase } from '../server/persistence/db'
 import { createProjectRepository } from '../server/persistence/project-repository'
@@ -5,9 +8,11 @@ import { createSessionRepository } from '../server/persistence/session-repositor
 import { MemoryError } from '../server/memory/errors'
 
 const databases: ReturnType<typeof openChatDatabase>[] = []
+const directories: string[] = []
 
 afterEach(() => {
   for (const db of databases.splice(0)) db.close()
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
 function createDatabase() {
@@ -17,6 +22,30 @@ function createDatabase() {
 }
 
 describe('projects', () => {
+  it('keeps created and assigned dialogue projects after reopening the database', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-chat-projects-'))
+    directories.push(directory)
+    const path = join(directory, 'chat.sqlite')
+    const db = openChatDatabase(path)
+    const projects = createProjectRepository(db)
+    const sessions = createSessionRepository(db)
+    const project = projects.create('Alpha')
+    const created = sessions.createSession({ projectId: project.id })
+    const assigned = sessions.createSession()
+    projects.assignSession(assigned.id, project.id)
+    db.close()
+
+    const reopened = openChatDatabase(path)
+    databases.push(reopened)
+    const reloadedSessions = createSessionRepository(reopened)
+    expect((await reloadedSessions.getSession(created.id))?.projectId).toBe(project.id)
+    expect((await reloadedSessions.getSession(assigned.id))?.projectId).toBe(project.id)
+    expect(reloadedSessions.listSessions().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.id, projectId: project.id }),
+      expect.objectContaining({ id: assigned.id, projectId: project.id }),
+    ]))
+  })
+
   it('groups sessions and filters them without changing the unfiltered list', () => {
     const db = createDatabase()
     const projects = createProjectRepository(db)

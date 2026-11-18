@@ -195,6 +195,28 @@ body {
   font-size: 0.72rem;
 }
 
+.session-list__item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.session-list__item-copy .session-list__kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.3rem;
+  background: #e2e8f0;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.session-list__item-copy .session-list__kind--branch {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .session-list__status {
   color: #b45309;
 }

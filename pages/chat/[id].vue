@@ -7,6 +7,7 @@ import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, pricing
 import { selectInitialSession } from '~/shared/session-navigation'
 import { useMemory } from '~/composables/useMemory'
 import type { Project, MemorySource } from '~/shared/memory'
+import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -44,6 +45,13 @@ const listError = shallowRef<string | null>(null)
 const operationError = shallowRef<string | null>(null)
 const modelSaveError = shallowRef<string | null>(null)
 const deleteError = shallowRef<string | null>(null)
+const modelConfigurations = shallowRef<ModelConfiguration[]>([])
+const configurationLoading = shallowRef(false)
+const configurationSaving = shallowRef(false)
+const configurationDeletingId = shallowRef<string | null>(null)
+const configurationError = shallowRef<string | null>(null)
+const configurationSaveError = shallowRef<string | null>(null)
+const configurationDeleteError = shallowRef<string | null>(null)
 const projectError = shallowRef<string | null>(null)
 const historyClearPending = shallowRef(false)
 const projects = shallowRef<Project[]>([])
@@ -56,6 +64,7 @@ const deletingId = shallowRef<string | null>(null)
 let modelSave = Promise.resolve()
 
 const sessionId = computed(() => String(route.params.id))
+const currentProject = computed(() => projects.value.find(project => project.id === session.value?.projectId))
 const visibleSessions = computed(() => {
   if (!session.value || sessions.value.some(item => item.id === session.value!.id)) return sessions.value
   return [session.value, ...sessions.value]
@@ -112,6 +121,47 @@ async function handleSettingsSave(payload: {
     modelSaveError.value = null
   } catch (caughtError) {
     modelSaveError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось сохранить настройки диалога.'
+  }
+}
+
+async function loadModelConfigurations(): Promise<void> {
+  configurationLoading.value = true
+  configurationError.value = null
+  modelConfigurations.value = []
+  try {
+    modelConfigurations.value = await $fetch<ModelConfiguration[]>('/api/model-configurations')
+  } catch (caughtError) {
+    configurationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось загрузить конфигурации моделей.'
+  } finally {
+    configurationLoading.value = false
+  }
+}
+
+async function handleSaveModelConfiguration(payload: ModelConfigurationSaveRequest): Promise<void> {
+  configurationSaving.value = true
+  configurationSaveError.value = null
+  try {
+    const saved = await $fetch<ModelConfiguration>('/api/model-configurations', { method: 'POST', body: payload })
+    modelConfigurations.value = [saved, ...modelConfigurations.value.filter(configuration => configuration.id !== saved.id)]
+    configurationError.value = null
+  } catch (caughtError) {
+    configurationSaveError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось сохранить конфигурацию модели.'
+  } finally {
+    configurationSaving.value = false
+  }
+}
+
+async function handleDeleteModelConfiguration(id: string): Promise<void> {
+  configurationDeletingId.value = id
+  configurationDeleteError.value = null
+  try {
+    await $fetch(`/api/model-configurations/${id}`, { method: 'DELETE' })
+    modelConfigurations.value = modelConfigurations.value.filter(configuration => configuration.id !== id)
+    configurationError.value = null
+  } catch (caughtError) {
+    configurationDeleteError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось удалить конфигурацию модели.'
+  } finally {
+    configurationDeletingId.value = null
   }
 }
 
@@ -448,6 +498,13 @@ watch(sessionId, () => {
       :model-value="modelId"
       v-model:context-limit="contextLimit"
       :model-save-error="modelSaveError"
+      :model-configurations="modelConfigurations"
+      :configuration-loading="configurationLoading"
+      :configuration-saving="configurationSaving"
+      :configuration-deleting-id="configurationDeletingId"
+      :configuration-error="configurationError"
+      :configuration-save-error="configurationSaveError"
+      :configuration-delete-error="configurationDeleteError"
       :list-error="listError"
       :delete-error="deleteError"
       :deleting-id="deletingId"
@@ -465,8 +522,11 @@ watch(sessionId, () => {
       :current-project-id="session.projectId"
       :project-error="projectError"
       @select="handleSelect"
+      @refresh-configurations="loadModelConfigurations"
       @update:model-value="handleModelChange"
       @save-settings="handleSettingsSave"
+      @save-configuration="handleSaveModelConfiguration"
+      @delete-configuration="handleDeleteModelConfiguration"
       @new-session="handleNewSession"
       @delete-session="handleDelete"
       @load-more="loadSessions(true)"
@@ -478,6 +538,7 @@ watch(sessionId, () => {
     <ChatWorkspace
       :key="session.id"
       :session="session"
+      :project-name="currentProject?.name"
       :model-id="modelId"
       :context-limit="contextLimit"
       :pricing="pricing"

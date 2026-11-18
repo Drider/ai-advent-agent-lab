@@ -68,7 +68,7 @@ describe('memory context snapshots', () => {
     databases.push(db)
     const project = createProjectRepository(db).create('Alpha')
     const session = createSessionRepository(db).createSession({ projectId: project.id })
-    createWorkingMemoryRepository(db).create({ projectId: project.id, category: 'note', key: 'large', value: 'x'.repeat(10_000) })
+    createWorkingMemoryRepository(db).create({ projectId: project.id, category: 'goal', key: 'large', value: 'x'.repeat(10_000) })
     createMemorySettingsRepository(db).update({ workingTokens: 100, expectedRevision: 0 })
     expect(() => assertMemoryBudgets(createMemorySnapshot(db, session.id))).toThrowError(MemoryError)
     try {
@@ -100,11 +100,12 @@ describe('memory context snapshots', () => {
     const globalFact = longTerm.create({ category: 'knowledge', key: 'global-after-page', value: 'keep', global: true })
     longTerm.create({ category: 'knowledge', key: 'project-only', value: 'hide', projectIds: [other.id] })
 
-    const projectSnapshot = createMemorySnapshot(db, projectSession.id)
+    const query = { id: randomUUID(), role: 'user' as const, parts: [{ type: 'text' as const, text: 'keep' }] }
+    const projectSnapshot = createMemorySnapshot(db, projectSession.id, query)
     expect(projectSnapshot.workingEntries.map(entry => entry.id)).toEqual([enabledEntry.id])
     expect(projectSnapshot.longTermFacts.map(fact => fact.id)).toEqual([globalFact.id])
 
-    const unassignedSnapshot = createMemorySnapshot(db, unassignedSession.id)
+    const unassignedSnapshot = createMemorySnapshot(db, unassignedSession.id, query)
     expect(unassignedSnapshot.longTermFacts.map(fact => fact.id)).toEqual([globalFact.id])
   })
 })

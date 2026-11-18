@@ -23,6 +23,7 @@ const selected = computed({
   set: value => emit('update:modelValue', value || undefined),
 })
 const selectedProject = computed(() => props.projects.find(project => project.id === props.modelValue))
+const assignedProject = computed(() => props.projects.find(project => project.id === props.assignedProjectId))
 
 function createProject(): void {
   const name = newName.value.trim()
@@ -46,11 +47,20 @@ function renameProject(): void {
       <span class="project-selector__label">Проект</span>
       <NuxtLink class="project-selector__link" :to="{ path: '/memory', query: { projectId: props.assignedProjectId ?? props.modelValue } }">Память</NuxtLink>
     </div>
-    <select v-model="selected" :disabled="props.disabled" aria-label="Фильтр проекта">
-      <option value="">Все проекты</option>
-      <option value="none">Без проекта</option>
-      <option v-for="project in props.projects" :key="project.id" :value="project.id">{{ project.name }}</option>
-    </select>
+    <div class="project-selector__current" aria-live="polite">
+      <span>Текущий диалог</span>
+      <strong v-if="assignedProject">Проект: {{ assignedProject.name }}</strong>
+      <strong v-else-if="props.assignedProjectId">Проект привязан</strong>
+      <strong v-else>Без проекта</strong>
+    </div>
+    <label class="project-selector__filter">
+      Фильтр диалогов
+      <select v-model="selected" :disabled="props.disabled" aria-label="Фильтр проекта">
+        <option value="">Все проекты</option>
+        <option value="none">Без проекта</option>
+        <option v-for="project in props.projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+      </select>
+    </label>
     <div class="project-selector__actions">
       <input v-model="newName" :disabled="props.disabled" type="text" maxlength="120" placeholder="Новый проект" @keydown.enter.prevent="createProject">
       <button type="button" :disabled="props.disabled || !newName.trim()" @click="createProject">Создать</button>
@@ -76,6 +86,9 @@ function renameProject(): void {
 .project-selector__heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .project-selector__label { color: #475569; font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .project-selector__link { color: #2563eb; font-size: .72rem; text-decoration: none; }
+.project-selector__current { display: grid; gap: .2rem; border-radius: .45rem; padding: .55rem; color: #64748b; background: #f1f5f9; font-size: .72rem; }
+.project-selector__current strong { color: #334155; font-size: .76rem; overflow-wrap: anywhere; }
+.project-selector__filter { display: grid; gap: .3rem; color: #64748b; font-size: .72rem; }
 .project-selector select, .project-selector input { width: 100%; min-width: 0; border: 1px solid #cbd5e1; border-radius: .45rem; padding: .45rem .55rem; color: #334155; background: #fff; font: inherit; font-size: .76rem; }
 .project-selector__actions { display: flex; gap: .35rem; }
 .project-selector__actions button, .project-selector__assign { flex: 0 0 auto; border: 1px solid #cbd5e1; border-radius: .45rem; padding: .4rem .55rem; color: #475569; background: #fff; font: inherit; font-size: .7rem; cursor: pointer; }

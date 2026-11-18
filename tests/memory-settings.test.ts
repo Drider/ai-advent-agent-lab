@@ -35,18 +35,19 @@ describe('memory settings', () => {
     expect(settings.get()).toEqual({ workingTokens: 2000, longTermTokens: 2000, revision: 0 })
   })
 
-  it('creates the version 9 memory tables and keeps the migration idempotent', () => {
+  it('creates the version 12 memory and model configuration tables and keeps the migration idempotent', () => {
     const db = openChatDatabase(':memory:')
     databases.push(db)
 
-    expect(db.pragma('user_version', { simple: true })).toBe(9)
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('projects', 'working_memory_entries', 'long_term_facts', 'project_long_term_facts', 'memory_settings', 'memory_usage_events', 'history_clear_operations', 'cleared_requests', 'cleared_tool_calls') ORDER BY name").all()).toEqual([
+    expect(db.pragma('user_version', { simple: true })).toBe(12)
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('projects', 'working_memory_entries', 'long_term_facts', 'project_long_term_facts', 'memory_settings', 'memory_usage_events', 'history_clear_operations', 'cleared_requests', 'cleared_tool_calls', 'model_configurations') ORDER BY name").all()).toEqual([
       { name: 'cleared_requests' },
       { name: 'cleared_tool_calls' },
       { name: 'history_clear_operations' },
       { name: 'long_term_facts' },
       { name: 'memory_settings' },
       { name: 'memory_usage_events' },
+      { name: 'model_configurations' },
       { name: 'project_long_term_facts' },
       { name: 'projects' },
       { name: 'working_memory_entries' },

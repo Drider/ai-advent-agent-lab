@@ -2,6 +2,7 @@
 import { computed, shallowRef } from 'vue'
 import ChatSettingsModal from '~/components/ChatSettingsModal.vue'
 import type { ChatCostSettings, ChatContextStrategySettings, SessionSummary } from '~/shared/chat'
+import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
 import ProjectSelector from '~/components/ProjectSelector.vue'
 import type { Project } from '~/shared/memory'
 
@@ -19,6 +20,13 @@ const props = defineProps<{
   contextLimit: string
   defaultModel: string
   modelSaveError?: string | null
+  modelConfigurations: ModelConfiguration[]
+  configurationLoading?: boolean
+  configurationSaving?: boolean
+  configurationDeletingId?: string | null
+  configurationError?: string | null
+  configurationSaveError?: string | null
+  configurationDeleteError?: string | null
   listError?: string | null
   deleteError?: string | null
   deletingId?: string | null
@@ -32,6 +40,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  refreshConfigurations: []
   select: [sessionId: string]
   newSession: []
   loadMore: []
@@ -39,6 +48,8 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   'update:contextLimit': [value: string]
   saveSettings: [payload: { modelId: string; contextLimit: string; contextStrategy: ChatContextStrategySettings; costSettings: ChatCostSettings; detailedStatistics: boolean }]
+  saveConfiguration: [payload: ModelConfigurationSaveRequest]
+  deleteConfiguration: [id: string]
   'update:projectFilter': [value: string | undefined]
   createProject: [name: string]
   renameProject: [payload: { id: string; name: string; expectedRevision: number }]
@@ -66,6 +77,11 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value))
 }
 
+function projectLabel(projectId: string | undefined): string {
+  if (!projectId) return 'Без проекта'
+  return props.projects?.find(project => project.id === projectId)?.name ?? 'Проект привязан'
+}
+
 const strategyLabel = computed(() => {
   switch (contextStrategy.value.strategy) {
     case 'sliding_window': return `Sliding Window · ${contextStrategy.value.windowSize}`
@@ -79,6 +95,11 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
   emit('saveSettings', payload)
   settingsOpen.value = false
 }
+
+function openSettings(): void {
+  settingsOpen.value = true
+  emit('refreshConfigurations')
+}
 </script>
 
 <template>
@@ -89,7 +110,7 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
       <div class="chat-settings-summary__line"><span>Контекст</span><strong>{{ strategyLabel }}</strong></div>
       <div class="chat-settings-summary__line"><span>Стоимость</span><strong>{{ costSettings.enabled ? 'включена' : 'выключена' }}</strong></div>
       <div class="chat-settings-summary__line"><span>Статистика</span><strong>{{ detailedStatistics ? 'подробная' : 'обычная' }}</strong></div>
-      <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-settings-2" block @click="settingsOpen = true">Настройки</UButton>
+      <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-settings-2" block @click="openSettings">Настройки</UButton>
       <p v-if="props.modelSaveError" class="chat-settings-summary__error" role="alert">{{ props.modelSaveError }}</p>
     </section>
     <ChatSettingsModal
@@ -101,8 +122,17 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
       :cost-settings="costSettings"
       :detailed-statistics="detailedStatistics"
       :save-error="props.modelSaveError"
+      :model-configurations="props.modelConfigurations"
+      :configuration-loading="props.configurationLoading"
+      :configuration-saving="props.configurationSaving"
+      :configuration-deleting-id="props.configurationDeletingId"
+      :configuration-error="props.configurationError"
+      :configuration-save-error="props.configurationSaveError"
+      :configuration-delete-error="props.configurationDeleteError"
       @cancel="settingsOpen = false"
       @save="handleSettingsSave"
+      @save-configuration="emit('saveConfiguration', $event)"
+      @delete-configuration="emit('deleteConfiguration', $event)"
     />
 
     <ProjectSelector
@@ -155,6 +185,10 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
         >
           <span class="session-list__item-copy">
             <strong>{{ item.title }}</strong>
+            <span class="session-list__project" :title="projectLabel(item.projectId)">
+              <UIcon name="i-lucide-folder" aria-hidden="true" />
+              {{ projectLabel(item.projectId) }}
+            </span>
             <span class="session-list__item-meta">
               <span
                 class="session-list__kind"
@@ -212,6 +246,13 @@ function handleSettingsSave(payload: { modelId: string; contextLimit: string; co
 </template>
 
 <style scoped>
+.session-list__project {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-settings-summary {
   display: grid;
   gap: 0.55rem;

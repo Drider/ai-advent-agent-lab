@@ -26,7 +26,7 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
   agentConfig: Record<string, unknown>
 }): { turnId: string; snapshot: MemorySnapshot } {
   assertHistoryAvailable(db, input.request.sessionId)
-  const snapshot = createMemorySnapshot(db, input.request.sessionId)
+  const snapshot = createMemorySnapshot(db, input.request.sessionId, input.request.message)
   assertMemoryBudgets(snapshot)
   assertImmediateMemoryWindow(snapshot, input.request, input.agentConfig)
   const turns = createTurnRepository(db)

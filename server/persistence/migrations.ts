@@ -1,6 +1,22 @@
 import type Database from 'better-sqlite3'
+import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 
-export const CHAT_SCHEMA_VERSION = 9
+export const CHAT_SCHEMA_VERSION = 12
+
+function uniqueMigrationName(name: string, usedKeys: Set<string>, existingKeys: Set<string>): string {
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const marker = ` (${suffix})`
+    let base = ''
+    for (const character of name) {
+      if (base.length + character.length > 80 - marker.length) break
+      base += character
+    }
+    const candidate = `${base.trimEnd()}${marker}`
+    const key = modelConfigurationNameKey(candidate)
+    if (!usedKeys.has(key) && !existingKeys.has(key)) return candidate
+  }
+  throw new Error('could not generate a unique migrated model configuration name')
+}
 
 export function migrateChatDatabase(db: Database.Database): void {
   const currentVersion = Number(db.pragma('user_version', { simple: true }))
@@ -287,6 +303,78 @@ export function migrateChatDatabase(db: Database.Database): void {
         cleared_at TEXT NOT NULL
       );
     `)
+    if (currentVersion < 10) db.exec(`
+      CREATE TABLE IF NOT EXISTS model_configurations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+        name_key TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL,
+        configuration_json TEXT NOT NULL CHECK (json_valid(configuration_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS model_configurations_name_key_unique_idx
+        ON model_configurations (name_key);
+      CREATE INDEX IF NOT EXISTS model_configurations_updated_at_idx
+        ON model_configurations (updated_at DESC, id DESC);
+    `)
+    if (currentVersion < 11) {
+      const columns = db.prepare("SELECT name FROM pragma_table_info('model_configurations')").all() as Array<{ name: string }>
+      if (!columns.some(column => column.name === 'name_key')) {
+        db.exec("ALTER TABLE model_configurations ADD COLUMN name_key TEXT NOT NULL DEFAULT ''")
+      }
+
+      db.exec(`
+        DROP INDEX IF EXISTS model_configurations_name_unique_idx;
+        DROP INDEX IF EXISTS model_configurations_name_key_unique_idx;
+      `)
+
+      const rows = db.prepare(`
+        SELECT id, name, model_id, configuration_json
+        FROM model_configurations
+        ORDER BY created_at ASC, id ASC
+      `).all() as Array<{ id: string; name: string; model_id: string; configuration_json: string }>
+      const existingKeys = new Set(rows.map(row => modelConfigurationNameKey(row.name)))
+      const usedKeys = new Set<string>()
+      const updateConfiguration = db.prepare(`
+        UPDATE model_configurations
+        SET name = ?, name_key = ?, configuration_json = ?
+        WHERE id = ?
+      `)
+
+      for (const row of rows) {
+        const stored = JSON.parse(row.configuration_json) as unknown
+        if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) {
+          throw new Error(`stored model configuration ${row.id} is invalid`)
+        }
+        let configuration = validateModelConfiguration({
+          ...stored,
+          name: row.name,
+          modelId: row.model_id,
+        })
+        const originalKey = modelConfigurationNameKey(configuration.name)
+        let name = configuration.name
+        let nameKey = originalKey
+        if (usedKeys.has(nameKey)) {
+          name = uniqueMigrationName(configuration.name, usedKeys, existingKeys)
+          configuration = validateModelConfiguration({ ...configuration, name })
+          nameKey = modelConfigurationNameKey(name)
+        }
+        usedKeys.add(nameKey)
+        updateConfiguration.run(name, nameKey, JSON.stringify(configuration), row.id)
+      }
+
+      db.exec(`
+        CREATE UNIQUE INDEX model_configurations_name_key_unique_idx
+          ON model_configurations (name_key);
+      `)
+    }
+    if (currentVersion < 12) {
+      const columns = db.prepare("SELECT name FROM pragma_table_info('memory_usage_events')").all() as Array<{ name: string }>
+      if (!columns.some(column => column.name === 'exclusions_json')) {
+        db.exec("ALTER TABLE memory_usage_events ADD COLUMN exclusions_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(exclusions_json))")
+      }
+    }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
   } catch (error) {

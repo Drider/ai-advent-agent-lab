@@ -5,9 +5,9 @@ import { createLongTermMemoryRepository } from '../../memory/long-term-repositor
 import { createWorkingMemoryRepository } from '../../memory/working-repository'
 
 const memoryInputSchema = z.object({
-  layer: z.enum(['working', 'long_term']).describe('Memory layer explicitly requested by the user, or inferred from the fact type.'),
-  category: z.enum(['goal', 'constraint', 'state', 'result', 'note', 'profile', 'decision', 'knowledge']),
-  scope: z.enum(['current_project', 'global']).describe('Use current_project for project-specific information. Use global only for user facts or preferences intended to apply across projects.'),
+  layer: z.enum(['working', 'long_term']).describe('Use working for requests to save to project memory unless long-term memory is explicitly requested. Use long_term only for explicit long-term, global, or cross-project memory requests; never infer it from the fact type.'),
+  category: z.enum(['goal', 'constraint', 'state', 'result', 'note', 'profile', 'decision', 'knowledge']).describe('Choose within the requested layer: working uses goal, constraint, state, result, or note (including project knowledge and decisions); long_term uses profile, decision, or knowledge.'),
+  scope: z.enum(['current_project', 'global']).describe('Use current_project for project memory. Use global only when the user explicitly requests global or cross-project memory; global requires layer=long_term.'),
   key: z.string().trim().min(1).max(80).describe('Short, stable title for this memory record.'),
   value: z.string().min(1).max(10_000).describe('The exact useful fact or project state to remember.'),
 })
@@ -23,7 +23,7 @@ export function createSaveMemoryTool(options: {
   projectId?: string
 } = {}) {
   return tool({
-    description: 'Save a memory record only when the user explicitly asks you to remember, save, or store information. Do not save facts merely because they may be useful. Use working for a current project goal, constraint, state, result, or note; use long_term for a stable profile fact, decision, or knowledge. Project scope always means the current chat project. Global scope applies across projects.',
+    description: 'Save a memory record only when the user explicitly asks you to remember, save, or store information. A request to save to project memory ("сохрани в память проекта") means working/current_project, even for knowledge or decisions: use category=note for these. Use long_term only when the user explicitly requests long-term, global, or cross-project memory. Global scope requires an explicit global or cross-project request. The requested layer takes priority over the content type. Project scope always means the current chat project.',
     inputSchema: memoryInputSchema,
     execute: async ({ layer, category, scope, key, value }) => {
       if (!options.db || !options.sessionId) {

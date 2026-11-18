@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import type { MemoryPreview, MemoryStatistics as MemoryStatisticsData } from '~/shared/memory'
+import type { MemoryExclusionReason, MemoryPreview, MemoryStatistics as MemoryStatisticsData } from '~/shared/memory'
 
 const props = defineProps<{ statistics: MemoryStatisticsData; preview?: MemoryPreview }>()
 
 function percent(value: number, budget?: number): string {
   return budget === undefined || budget === 0 ? '—' : `${(value / budget * 100).toFixed(1)}%`
+}
+
+const exclusionLabels: Record<MemoryExclusionReason, string> = {
+  disabled: 'запись отключена',
+  not_relevant: 'нет совпадений с запросом',
+  budget_exceeded: 'не помещается в бюджет',
 }
 </script>
 
@@ -18,7 +24,7 @@ function percent(value: number, budget?: number): string {
       <div><span>Производные представления</span><strong>{{ props.statistics.stored.summaries }} сводок · {{ props.statistics.stored.stickyFacts }} Sticky Facts</strong><small>не являются подтверждёнными фактами</small></div>
     </div>
     <div v-if="props.preview" class="memory-statistics__prepared">
-      <p>Последняя оценка контекста</p>
+      <p>Оценка обязательной памяти</p>
       <span>Рабочая: {{ props.preview.working.estimatedTokens }} токенов ({{ percent(props.preview.working.estimatedTokens, props.preview.working.budgetTokens) }})</span>
       <span>Долговременная: {{ props.preview.longTerm.estimatedTokens }} токенов ({{ percent(props.preview.longTerm.estimatedTokens, props.preview.longTerm.budgetTokens) }})</span>
     </div>
@@ -27,6 +33,10 @@ function percent(value: number, budget?: number): string {
       <template v-if="props.statistics.lastPrepared && !props.statistics.lastPrepared.contextCleared">
         <span>{{ new Date(props.statistics.lastPrepared.preparedAt).toLocaleString('ru-RU') }}</span>
         <span>{{ props.statistics.lastPrepared.working.count }} рабочих записей · {{ props.statistics.lastPrepared.longTerm.count }} долговременных фактов</span>
+        <details v-if="props.statistics.lastPrepared.exclusions.length">
+          <summary>Причины исключения · {{ props.statistics.lastPrepared.exclusions.length }}</summary>
+          <p v-for="record in props.statistics.lastPrepared.exclusions" :key="`${record.layer}:${record.id}`">{{ record.layer === 'working' ? 'Рабочая' : 'Долговременная' }} · {{ record.id }} · {{ exclusionLabels[record.reason] }}</p>
+        </details>
       </template>
       <span v-else-if="props.statistics.lastPrepared">Состав скрыт: история этого диалога очищена.</span>
       <span v-else>Нет событий подготовки памяти.</span>

@@ -9,8 +9,13 @@ function single(value: string | string[] | undefined): string | undefined {
 
 export default defineEventHandler((event) => {
   setHeader(event, 'Cache-Control', 'no-store')
+  const query = getQuery(event)
   try {
-    return previewMemory(getChatDatabase(), single(getQuery(event).projectId as string | string[] | undefined))
+    return previewMemory(
+      getChatDatabase(),
+      single(query.projectId as string | string[] | undefined),
+      single(query.query as string | string[] | undefined),
+    )
   } catch (error) {
     throw toMemoryHttpError(error)
   }

@@ -27,7 +27,7 @@ describe('memory-aware turn start', () => {
     databases.push(db)
     const project = createProjectRepository(db).create('Alpha')
     const session = createSessionRepository(db).createSession({ projectId: project.id })
-    createWorkingMemoryRepository(db).create({ projectId: project.id, category: 'note', key: 'large', value: 'x'.repeat(10_000) })
+    createWorkingMemoryRepository(db).create({ projectId: project.id, category: 'goal', key: 'large', value: 'x'.repeat(10_000) })
     createMemorySettingsRepository(db).update({ workingTokens: 100, expectedRevision: 0 })
 
     expect(() => startMemoryAwareTurn(db, { request: request(session.id), modelId: 'mock', agentConfig: {} })).toThrow(MemoryError)

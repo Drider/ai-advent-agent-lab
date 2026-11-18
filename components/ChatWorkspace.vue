@@ -7,6 +7,7 @@ import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, pa
 
 const props = defineProps<{
   session: SessionDetail
+  projectName?: string
   modelId: string
   contextLimit: string
   compactionEnabled: boolean
@@ -279,6 +280,11 @@ function dismissError(): void {
       <div class="chat-header__copy">
         <p class="chat-eyebrow" :title="props.modelId">AI SDK · {{ props.modelId }}</p>
         <h1>{{ session.title }}</h1>
+        <p class="chat-project" aria-live="polite">
+          <UIcon name="i-lucide-folder" aria-hidden="true" />
+          <span v-if="props.session.projectId">Проект: {{ props.projectName ?? props.session.projectId }}</span>
+          <span v-else>Без проекта</span>
+        </p>
         <div class="chat-context-usage" aria-label="Использование контекстного окна">
           <p v-if="contextUsage?.kind === 'limited'">
             Последнее обращение: {{ tokenFormatter.format(contextUsage.occupiedTokens) }} / {{ tokenFormatter.format(contextUsage.limit) }} токенов ({{ contextUsage.percent }} %)
@@ -402,6 +408,16 @@ function dismissError(): void {
 </template>
 
 <style scoped>
+.chat-project {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  margin: .3rem 0;
+  color: #475569;
+  font-size: .75rem;
+  overflow-wrap: anywhere;
+}
+
 .sticky-facts-panel {
   margin: 0 1.25rem .75rem;
   border: 1px solid #dbe4ef;

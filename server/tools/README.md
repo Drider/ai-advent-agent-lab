@@ -12,6 +12,8 @@
   `find_files`, `read_file`, `search_text`, `text_stats`, `write_file`.
 - [`memory/`](./memory/README.md) — явное сохранение записи в рабочую или долговременную память:
   `save_memory`.
+- [`model-configurations/`](./model-configurations/README.md) — сохранение, просмотр и удаление именованных конфигураций моделей:
+  `save_model_configuration`, `list_model_configurations`, `delete_model_configuration`.
 - [`sessions/`](./sessions/README.md) — поиск через `find_files`, чтение и агрегирование JSON-логов:
   `get_current_session`, `list_sessions`, `read_session_file`, `analyze_sessions`.
 

@@ -21,6 +21,7 @@ interface UsageRow {
   long_term_tokens: number
   working_refs_json: string
   long_term_refs_json: string
+  exclusions_json: string
 }
 
 function numbers(count: number, bytes: number, estimatedTokens: number): MemoryUsageNumbers {
@@ -41,6 +42,7 @@ function toEvent(row: UsageRow): MemoryUsageEvent {
     longTerm: numbers(row.long_term_count, row.long_term_bytes, row.long_term_tokens),
     workingRefs: JSON.parse(row.working_refs_json) as MemorySelectionRef[],
     longTermRefs: JSON.parse(row.long_term_refs_json) as MemorySelectionRef[],
+    exclusions: JSON.parse(row.exclusions_json),
   }
 }
 
@@ -72,8 +74,8 @@ export function createMemoryUsageRepository(db: Database.Database) {
          short_term_count, short_term_bytes, short_term_tokens,
          working_count, working_bytes, working_tokens,
          long_term_count, long_term_bytes, long_term_tokens,
-         working_refs_json, long_term_refs_json)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         working_refs_json, long_term_refs_json, exclusions_json)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       input.snapshot.id,
@@ -92,6 +94,7 @@ export function createMemoryUsageRepository(db: Database.Database) {
       input.snapshot.preview.longTerm.estimatedTokens,
       JSON.stringify(input.snapshot.workingRefs),
       JSON.stringify(input.snapshot.longTermRefs),
+      JSON.stringify(input.snapshot.preview.exclusions),
     )
     return findBySnapshot(input.snapshot.id)!
   }

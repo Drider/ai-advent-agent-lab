@@ -21,6 +21,7 @@ interface UsageRow {
   long_term_tokens: number
   working_refs_json: string
   long_term_refs_json: string
+  exclusions_json: string
 }
 
 function layer(count: number, bytes: number, estimatedTokens: number, label: 'messages' | 'entries' | 'facts'): MemoryStoredLayer {
@@ -46,6 +47,7 @@ function toEvent(row: UsageRow): MemoryUsageEvent {
     longTerm: { count: row.long_term_count, bytes: row.long_term_bytes, estimatedTokens: row.long_term_tokens },
     workingRefs: JSON.parse(row.working_refs_json),
     longTermRefs: JSON.parse(row.long_term_refs_json),
+    exclusions: JSON.parse(row.exclusions_json),
   }
 }
 

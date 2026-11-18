@@ -44,7 +44,8 @@ function save(): void {
       <div><div class="memory-progress__line"><span>Рабочий слой</span><strong>{{ preview.working.estimatedTokens }} / {{ preview.working.budgetTokens }} · {{ preview.working.percent.toFixed(1) }}%</strong></div><progress :value="progress.working" max="100" :class="{ 'memory-progress--over': preview.working.exceeded }" /></div>
       <div><div class="memory-progress__line"><span>Долговременный слой</span><strong>{{ preview.longTerm.estimatedTokens }} / {{ preview.longTerm.budgetTokens }} · {{ preview.longTerm.percent.toFixed(1) }}%</strong></div><progress :value="progress.longTerm" max="100" :class="{ 'memory-progress--over': preview.longTerm.exceeded }" /></div>
     </div>
-    <p v-if="preview.working.exceeded || preview.longTerm.exceeded" class="memory-error" role="alert">Переполнение не обрезает записи: отключите или сократите записи перед отправкой.</p>
+    <p class="memory-muted">Без запроса показана обязательная память: цели, ограничения, состояние и профиль. Остальные записи отбираются при отправке по совпадениям с запросом и недавними репликами.</p>
+    <p v-if="preview.working.exceeded || preview.longTerm.exceeded" class="memory-error" role="alert">Обязательная память превышает бюджет: увеличьте его, отключите или сократите записи перед отправкой.</p>
     <p v-if="error" class="memory-error" role="alert">{{ error }}</p>
     <button class="memory-button memory-button--primary" type="button" :disabled="props.saving" @click="save">{{ props.saving ? 'Сохраняем…' : 'Сохранить бюджеты' }}</button>
   </section>
