@@ -8,6 +8,7 @@ export default defineNuxtConfig({
   css: ['~/app/assets/css/main.css'],
   ui: {
     fonts: false,
+    colorMode: false,
   },
   compatibilityDate: '2025-07-15',
   devtools: { enabled: false },

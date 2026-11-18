@@ -549,6 +549,7 @@ textarea {
 .chat-composer textarea {
   width: 100%;
   resize: none;
+  color: #172033;
 }
 
 .chat-composer__footer {
