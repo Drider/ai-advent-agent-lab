@@ -5,6 +5,7 @@ import type { ChatRuntimeConfig } from '../utils/chat-request'
 import { parseChatPayload, resolveChatConfig } from '../utils/chat-request'
 import { getAgentConfig, streamChatAgent } from '../agent/chat-agent'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
+import { createSaveMemoryTool } from '../tools/memory'
 import { getChatDatabase } from '../persistence/db'
 import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
@@ -171,6 +172,7 @@ export default defineEventHandler(async (event) => {
       memoryMetadata: memorySnapshot.transientMemory,
       turnRepository: turns,
       disableMutatingTools: request.kind === 'continue',
+      saveMemoryTool: createSaveMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),
