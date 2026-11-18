@@ -11,6 +11,9 @@ export default defineNuxtConfig({
     colorMode: false,
   },
   compatibilityDate: '2025-07-15',
+  devServer: {
+    port: 3535,
+  },
   devtools: { enabled: false },
   runtimeConfig: {
     llmApiKey: process.env.LLM_API_KEY ?? '',
