@@ -58,6 +58,17 @@
 
 API возвращает `400` при неверных данных, `404` при отсутствии профиля или диалога и `409` при конфликте названия, ревизии или попытке переключить занятый диалог. Ответы маршрутов профилей и назначения профиля имеют заголовок `Cache-Control: no-store`.
 
+## Где находится код
+
+| Часть функциональности | Основные файлы |
+| --- | --- |
+| Страница списка и редактирования профилей | [`pages/profiles.vue`](../pages/profiles.vue), [`UserProfileList.vue`](../components/UserProfileList.vue), [`UserProfileEditor.vue`](../components/UserProfileEditor.vue) |
+| Выбор профиля в диалоге | [`pages/chat/[id].vue`](../pages/chat/%5Bid%5D.vue), [`UserProfileSelector.vue`](../components/UserProfileSelector.vue), [`user-profile.patch.ts`](../server/api/sessions/%5Bid%5D/user-profile.patch.ts) |
+| Типы и проверка полей | [`shared/user-profile.ts`](../shared/user-profile.ts) |
+| HTTP API и хранение в SQLite | [`server/api/user-profiles/`](../server/api/user-profiles/), [`user-profile-repository.ts`](../server/persistence/user-profile-repository.ts), [`migrations.ts`](../server/persistence/migrations.ts) |
+| Снимок профиля для хода и инструкции агента | [`start-turn.ts`](../server/memory/start-turn.ts), [`chat-agent.ts`](../server/agent/chat-agent.ts) |
+| Управление профилями через инструменты агента | [`user-profile-tools.ts`](../server/tools/user-profiles/user-profile-tools.ts) |
+
 ## Ограничения
 
 В текущей версии нет удаления, импорта и экспорта профилей, профилей на уровне проекта или объединения нескольких профилей для одного диалога. Изменение профиля не переписывает старые ответы и сохранённые сводки истории.

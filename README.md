@@ -186,6 +186,18 @@ cp /путь/к/report.pdf data/documents/report.pdf
 
 `read_session_file` читает файл до 2 МиБ, возвращает метаданные и страницы по 1–10 запросов; можно искать подстроку в вопросах и ответах. Текст каждого вопроса и ответа ограничен 1000 символами в одном результате. `analyze_sessions` принимает до 20 выбранных путей, группирует по UTC-дню, модели, инструменту или сессии и умеет фильтровать по датам, модели, инструменту и `runId`. В логах уровня `basic` сведения о модели и вызовах инструментов отсутствуют; в таких срезах они обозначаются `(unknown)`. Один запрос с несколькими разными инструментами попадает в каждую соответствующую группу.
 
+## Где находится код
+
+| Функциональность | Основные файлы и каталоги |
+| --- | --- |
+| Интерфейс чата и потоковый ответ | [`pages/chat/[id].vue`](pages/chat/%5Bid%5D.vue), [`components/ChatWorkspace.vue`](components/ChatWorkspace.vue), [`server/api/chat.post.ts`](server/api/chat.post.ts), [`server/agent/chat-agent.ts`](server/agent/chat-agent.ts) |
+| Сессии, проекты, ветки и SQLite | [`server/persistence/`](server/persistence/), [`server/api/sessions/`](server/api/sessions/), [`server/api/projects/`](server/api/projects/) |
+| Стратегии контекста и сжатие истории | [`server/context-compaction/`](server/context-compaction/), [`server/api/chat.post.ts`](server/api/chat.post.ts) |
+| Рабочая и долговременная память | [`pages/memory.vue`](pages/memory.vue), [`composables/useMemory.ts`](composables/useMemory.ts), [`server/memory/`](server/memory/), [`server/tools/memory/`](server/tools/memory/) |
+| Профили пользователя | [`pages/profiles.vue`](pages/profiles.vue), [`server/api/user-profiles/`](server/api/user-profiles/), [`server/persistence/user-profile-repository.ts`](server/persistence/user-profile-repository.ts), [`server/tools/user-profiles/`](server/tools/user-profiles/) |
+| Инструменты агента | [`server/tools/`](server/tools/) — отдельные группы для файлов, кубика, сессий, памяти, профилей и конфигураций моделей |
+| Токены, стоимость и диагностические логи | [`server/agent/token-usage.ts`](server/agent/token-usage.ts), [`shared/chat.ts`](shared/chat.ts), [`components/ChatRequestMetrics.vue`](components/ChatRequestMetrics.vue), [`server/utils/run-logger.ts`](server/utils/run-logger.ts) |
+
 Полезные команды:
 
 ```bash
