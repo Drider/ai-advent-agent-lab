@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import ChatSettingsModal from '~/components/ChatSettingsModal.vue'
+import ProjectSessionGroups from '~/components/ProjectSessionGroups.vue'
 import type { ChatCostSettings, ChatContextStrategySettings, SessionSummary } from '~/shared/chat'
 import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
-import ProjectSelector from '~/components/ProjectSelector.vue'
 import type { Project } from '~/shared/memory'
 
 const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
@@ -14,8 +14,8 @@ const contextStrategy = defineModel<ChatContextStrategySettings>('contextStrateg
 const settingsOpen = shallowRef(false)
 
 const props = defineProps<{
-  items: SessionSummary[]
-  selectedId: string
+  currentSession: SessionSummary
+  refreshKey: number
   modelValue: string
   contextLimit: string
   defaultModel: string
@@ -27,60 +27,28 @@ const props = defineProps<{
   configurationError?: string | null
   configurationSaveError?: string | null
   configurationDeleteError?: string | null
-  listError?: string | null
   deleteError?: string | null
   deletingId?: string | null
-  loading?: boolean
   disabled?: boolean
-  hasMore?: boolean
   projects?: Project[]
-  projectFilter?: string
-  currentProjectId?: string
+  createdProjectId?: string | null
   projectError?: string | null
 }>()
 
 const emit = defineEmits<{
   refreshConfigurations: []
   select: [sessionId: string]
-  newSession: []
-  loadMore: []
-  deleteSession: [sessionId: string]
+  newSession: [projectId: string | null]
+  deleteSession: [session: { id: string; title: string }]
   'update:modelValue': [value: string]
   'update:contextLimit': [value: string]
   saveSettings: [payload: { modelId: string; contextLimit: string; contextStrategy: ChatContextStrategySettings; costSettings: ChatCostSettings; detailedStatistics: boolean }]
   saveConfiguration: [payload: ModelConfigurationSaveRequest]
   deleteConfiguration: [id: string]
-  'update:projectFilter': [value: string | undefined]
   createProject: [name: string]
   renameProject: [payload: { id: string; name: string; expectedRevision: number }]
   assignProject: [projectId: string]
 }>()
-
-function statusLabel(status: SessionSummary['status']): string {
-  switch (status) {
-    case 'running':
-      return 'В работе'
-    case 'interrupted':
-      return 'Прерван'
-    case 'stopped':
-      return 'Остановлен'
-    case 'failed':
-      return 'Ошибка'
-    case 'needs_review':
-      return 'Нужна проверка'
-    default:
-      return ''
-  }
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(value))
-}
-
-function projectLabel(projectId: string | undefined): string {
-  if (!projectId) return 'Без проекта'
-  return props.projects?.find(project => project.id === projectId)?.name ?? 'Проект привязан'
-}
 
 const strategyLabel = computed(() => {
   switch (contextStrategy.value.strategy) {
@@ -135,124 +103,26 @@ function openSettings(): void {
       @delete-configuration="emit('deleteConfiguration', $event)"
     />
 
-    <ProjectSelector
+    <ProjectSessionGroups
       :projects="props.projects ?? []"
-      :model-value="props.projectFilter"
-      :assigned-project-id="props.currentProjectId"
+      :current-session="props.currentSession"
       :disabled="props.disabled"
-      @update:model-value="emit('update:projectFilter', $event)"
-      @create="emit('createProject', $event)"
-      @rename="emit('renameProject', $event)"
-      @assign-session="emit('assignProject', $event)"
+      :deleting-id="props.deletingId"
+      :refresh-key="props.refreshKey"
+      :created-project-id="props.createdProjectId"
+      :project-error="props.projectError"
+      :delete-error="props.deleteError"
+      @select="emit('select', $event)"
+      @new-session="emit('newSession', $event)"
+      @delete-session="emit('deleteSession', $event)"
+      @create-project="emit('createProject', $event)"
+      @rename-project="emit('renameProject', $event)"
+      @assign-project="emit('assignProject', $event)"
     />
-    <p v-if="props.projectError" class="session-sidebar__error" role="alert">{{ props.projectError }}</p>
-
-    <div class="session-sidebar__header">
-      <div>
-        <p class="session-sidebar__eyebrow">История</p>
-        <h2>Диалоги</h2>
-      </div>
-      <UButton
-        icon="i-lucide-square-pen"
-        color="neutral"
-        variant="soft"
-        square
-        aria-label="Новая сессия"
-        :disabled="props.disabled"
-        @click="emit('newSession')"
-      />
-    </div>
-
-    <div v-if="props.loading" class="session-sidebar__empty" role="status">
-      Загружаем диалоги…
-    </div>
-    <div v-else-if="props.items.length === 0 && !props.listError" class="session-sidebar__empty">
-      Пока нет сохранённых диалогов.
-    </div>
-    <nav v-else-if="props.items.length > 0" class="session-list" aria-label="Список диалогов">
-      <div
-        v-for="item in props.items"
-        :key="item.id"
-        class="session-list__row"
-      >
-        <button
-          class="session-list__item"
-          :class="{ 'session-list__item--selected': item.id === props.selectedId }"
-          type="button"
-          :disabled="props.disabled || Boolean(props.deletingId)"
-          :aria-current="item.id === props.selectedId ? 'page' : undefined"
-          @click="emit('select', item.id)"
-        >
-          <span class="session-list__item-copy">
-            <strong>{{ item.title }}</strong>
-            <span class="session-list__project" :title="projectLabel(item.projectId)">
-              <UIcon name="i-lucide-folder" aria-hidden="true" />
-              {{ projectLabel(item.projectId) }}
-            </span>
-            <span class="session-list__item-meta">
-              <span
-                class="session-list__kind"
-                :class="{ 'session-list__kind--branch': item.branchSourceMessageId }"
-              >
-                <UIcon
-                  :name="item.branchSourceMessageId ? 'i-lucide-git-branch' : 'i-lucide-message-square'"
-                  aria-hidden="true"
-                />
-                {{ item.branchSourceMessageId ? 'Ветка' : 'Основной диалог' }}
-              </span>
-              <span>{{ formatDate(item.updatedAt) }}</span>
-            </span>
-          </span>
-          <span v-if="statusLabel(item.status)" class="session-list__status">
-            {{ statusLabel(item.status) }}
-          </span>
-        </button>
-        <UButton
-          class="session-list__delete"
-          icon="i-lucide-trash-2"
-          color="error"
-          variant="ghost"
-          size="sm"
-          square
-          :aria-label="`Удалить диалог «${item.title}»`"
-          :title="item.status === 'running' ? 'Дождитесь завершения запроса' : 'Удалить диалог'"
-          :disabled="props.disabled || item.status === 'running' || Boolean(props.deletingId)"
-          :loading="props.deletingId === item.id"
-          @click="emit('deleteSession', item.id)"
-        />
-      </div>
-    </nav>
-
-    <p v-if="props.listError" class="session-sidebar__error" role="alert">
-      {{ props.listError }}
-    </p>
-    <p v-if="props.deleteError" class="session-sidebar__error" role="alert">
-      {{ props.deleteError }}
-    </p>
-
-    <UButton
-      v-if="props.hasMore"
-      class="session-sidebar__more"
-      color="neutral"
-      variant="ghost"
-      size="sm"
-      block
-      :disabled="props.loading"
-      @click="emit('loadMore')"
-    >
-      Загрузить ещё
-    </UButton>
   </aside>
 </template>
 
 <style scoped>
-.session-list__project {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .chat-settings-summary {
   display: grid;
   gap: 0.55rem;
@@ -284,5 +154,9 @@ function openSettings(): void {
   color: #b42318;
   font-size: .74rem;
   line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .chat-settings-summary__line { display: none; }
 }
 </style>

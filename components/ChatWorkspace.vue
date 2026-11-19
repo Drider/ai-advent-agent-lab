@@ -305,20 +305,19 @@ function dismissError(): void {
         </div>
       </div>
       <div class="chat-header__actions">
-        <UserProfileSelector
-          :items="props.userProfiles"
-          :model-value="props.session.userProfileId"
-          :disabled="isBusy"
-          :loading="props.userProfilesLoading"
-          :error="props.profileSelectionError"
-          @select="emit('selectProfile', $event)"
-        />
-        <UButton color="neutral" variant="soft" icon="i-lucide-user-round-cog" :to="{ path: '/profiles', query: { sessionId: props.session.id, profileId: props.session.userProfileId } }">Профили</UButton>
+        <div class="chat-header__profile">
+          <UserProfileSelector
+            :items="props.userProfiles"
+            :model-value="props.session.userProfileId"
+            :disabled="isBusy"
+            :loading="props.userProfilesLoading"
+            :error="props.profileSelectionError"
+            @select="emit('selectProfile', $event)"
+          />
+          <UButton color="neutral" variant="soft" icon="i-lucide-user-round-cog" square aria-label="Управление профилями" title="Управление профилями" :to="{ path: '/profiles', query: { sessionId: props.session.id, profileId: props.session.userProfileId } }" />
+        </div>
         <UButton color="neutral" variant="soft" icon="i-lucide-brain" :to="{ path: '/memory', query: { sessionId: props.session.id, ...(props.session.projectId ? { projectId: props.session.projectId } : {}) } }">Память</UButton>
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
-        <UButton class="chat-new-session" color="neutral" variant="soft" icon="i-lucide-square-pen" aria-label="Новая сессия" :disabled="isBusy" @click="emit('newSession')">
-          <span class="chat-new-session__label">Новая сессия</span>
-        </UButton>
       </div>
     </header>
 
@@ -369,26 +368,28 @@ function dismissError(): void {
             :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
-          <button
-            v-if="!isBusy && getMessageText(message)"
-            type="button"
-            class="message-memory-button"
-            title="Сохранить видимый текст в память"
-            @click="emit('saveMemory', { text: getMessageText(message), source: { sourceSessionId: props.session.id, sourceMessageId: message.id } })"
-          >
-            <UIcon name="i-lucide-brain" aria-hidden="true" />
-            <span>Сохранить в память</span>
-          </button>
-          <button
-            v-if="message.role === 'assistant' && !isBusy"
-            type="button"
-            class="branch-message-button"
-            title="Создать ветку из этого ответа"
-            @click="emit('createBranch', message.id)"
-          >
-            <UIcon name="i-lucide-git-branch" aria-hidden="true" />
-            <span>Ветка</span>
-          </button>
+          <div v-if="!isBusy && (getMessageText(message) || message.role === 'assistant')" class="message-actions">
+            <button
+              v-if="getMessageText(message)"
+              type="button"
+              class="message-memory-button"
+              title="Сохранить видимый текст в память"
+              @click="emit('saveMemory', { text: getMessageText(message), source: { sourceSessionId: props.session.id, sourceMessageId: message.id } })"
+            >
+              <UIcon name="i-lucide-brain" aria-hidden="true" />
+              <span>Сохранить в память</span>
+            </button>
+            <button
+              v-if="message.role === 'assistant'"
+              type="button"
+              class="branch-message-button"
+              title="Создать ветку из этого ответа"
+              @click="emit('createBranch', message.id)"
+            >
+              <UIcon name="i-lucide-git-branch" aria-hidden="true" />
+              <span>Ветка</span>
+            </button>
+          </div>
           <details
             v-for="attempt in compactionAttemptsByUserMessage.get(message.id) ?? []"
             :key="attempt.id"
@@ -414,6 +415,9 @@ function dismissError(): void {
       <UTextarea v-model="draft" :disabled="isBusy || props.historyClearPending" :rows="3" autoresize size="xl" variant="none" :placeholder="props.historyClearPending ? 'Очистка истории ожидает завершения…' : 'Напишите сообщение…'" aria-label="Сообщение" @keydown="handleKeydown" />
       <div class="chat-composer__footer">
         <span class="chat-composer__hint">Enter — отправить · Shift+Enter — новая строка</span>
+        <UButton type="button" class="chat-new-session" color="neutral" variant="soft" icon="i-lucide-square-pen" aria-label="Новая сессия" :disabled="isBusy" @click="emit('newSession')">
+          <span class="chat-new-session__label">Новая сессия</span>
+        </UButton>
         <UButton v-if="isBusy" type="button" color="neutral" icon="i-lucide-square" aria-label="Остановить генерацию" @click="handleStop" />
         <UButton v-else type="submit" class="chat-composer__submit" color="neutral" variant="solid" aria-label="Отправить сообщение" :disabled="!draft.trim() || props.historyClearPending"><UIcon name="i-lucide-arrow-up" class="chat-composer__submit-icon" aria-hidden="true" /></UButton>
       </div>
@@ -432,7 +436,8 @@ function dismissError(): void {
   overflow-wrap: anywhere;
 }
 
-.chat-header__actions { flex-wrap: wrap; align-items: start; }
+.chat-header__actions { flex-wrap: wrap; align-items: center; }
+.chat-header__profile { display: flex; align-items: center; gap: .375rem; white-space: nowrap; }
 
 .sticky-facts-panel {
   margin: 0 1.25rem .75rem;
@@ -463,11 +468,18 @@ function dismissError(): void {
 .sticky-facts-panel dt { color: #64748b; font-weight: 600; }
 .sticky-facts-panel dd { margin: 0; color: #334155; }
 
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-top: .35rem;
+  white-space: nowrap;
+}
+
 .branch-message-button {
   display: inline-flex;
   align-items: center;
   gap: .3rem;
-  margin-top: .55rem;
   border: 0;
   padding: .2rem .35rem;
   color: #64748b;
@@ -483,7 +495,6 @@ function dismissError(): void {
   display: inline-flex;
   align-items: center;
   gap: .3rem;
-  margin-top: .35rem;
   border: 0;
   padding: .2rem .35rem;
   color: #64748b;

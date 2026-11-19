@@ -27,7 +27,7 @@ function handleChange(value: string): void {
 
 <template>
   <label class="profile-selector">
-    <span>Профиль</span>
+    <span>Профиль:</span>
     <select
       :value="selectedId"
       :disabled="props.disabled || props.loading || props.items.length === 0"
@@ -44,9 +44,9 @@ function handleChange(value: string): void {
 </template>
 
 <style scoped>
-.profile-selector { display: grid; gap: .25rem; min-width: 11rem; color: #475569; font-size: .72rem; font-weight: 600; }
-.profile-selector select { max-width: 15rem; border: 1px solid #cbd5e1; border-radius: .55rem; padding: .45rem 2rem .45rem .65rem; color: #0f172a; background: white; font: inherit; font-size: .84rem; }
+.profile-selector { display: inline-grid; grid-template-columns: auto minmax(8rem, 11rem); align-items: center; gap: .25rem .5rem; min-width: 0; color: #475569; font-size: .72rem; font-weight: 600; }
+.profile-selector select { width: 100%; min-width: 0; height: 2rem; border: 1px solid #cbd5e1; border-radius: .55rem; padding: .35rem 1.75rem .35rem .65rem; color: #0f172a; background: white; font: inherit; font-size: .84rem; }
 .profile-selector select:disabled { cursor: not-allowed; opacity: .65; }
-.profile-selector__hint { color: #64748b; font-weight: 400; }
-.profile-selector__error { max-width: 18rem; color: #b91c1c; font-weight: 500; }
+.profile-selector__hint { grid-column: 1 / -1; color: #64748b; font-weight: 400; }
+.profile-selector__error { grid-column: 1 / -1; max-width: 18rem; overflow-wrap: anywhere; color: #b91c1c; font-weight: 500; }
 </style>

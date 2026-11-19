@@ -12,7 +12,6 @@ import type { UserProfileSummary } from '~/shared/user-profile'
 
 interface SessionListResponse {
   items: SessionSummary[]
-  nextCursor?: string
   preferredSessionId?: string
 }
 
@@ -39,13 +38,10 @@ const session = shallowRef<SessionDetail | null>(null)
 const userProfiles = shallowRef<UserProfileSummary[]>([])
 const userProfilesLoading = shallowRef(false)
 const profileSelectionError = shallowRef<string | null>(null)
-const sessions = shallowRef<SessionSummary[]>([])
-const nextCursor = shallowRef<string | undefined>()
 const loading = shallowRef(true)
-const listLoading = shallowRef(true)
+const groupRefreshKey = shallowRef(0)
 const workspaceBusy = shallowRef(false)
 const error = shallowRef<string | null>(null)
-const listError = shallowRef<string | null>(null)
 const operationError = shallowRef<string | null>(null)
 const modelSaveError = shallowRef<string | null>(null)
 const deleteError = shallowRef<string | null>(null)
@@ -59,7 +55,7 @@ const configurationDeleteError = shallowRef<string | null>(null)
 const projectError = shallowRef<string | null>(null)
 const historyClearPending = shallowRef(false)
 const projects = shallowRef<Project[]>([])
-const projectFilter = shallowRef<string | undefined>(typeof route.query.projectId === 'string' ? route.query.projectId : undefined)
+const createdProjectId = shallowRef<string | null>(null)
 const memoryFormOpen = shallowRef(false)
 const memoryFormLayer = shallowRef<'working' | 'long_term'>('long_term')
 const memoryFormText = shallowRef('')
@@ -69,10 +65,6 @@ let modelSave = Promise.resolve()
 
 const sessionId = computed(() => String(route.params.id))
 const currentProject = computed(() => projects.value.find(project => project.id === session.value?.projectId))
-const visibleSessions = computed(() => {
-  if (!session.value || sessions.value.some(item => item.id === session.value!.id)) return sessions.value
-  return [session.value, ...sessions.value]
-})
 
 async function loadSession(): Promise<void> {
   const requestedId = sessionId.value
@@ -223,33 +215,15 @@ function handleModelChange(value: string): void {
   })
 }
 
-async function loadSessions(append = false): Promise<SessionListResponse | null> {
-  listLoading.value = true
-  listError.value = null
-  try {
-    const query = {
-      ...(append && nextCursor.value ? { cursor: nextCursor.value } : {}),
-      ...(projectFilter.value === undefined ? {} : { projectId: projectFilter.value }),
-    }
-    const result = await $fetch<SessionListResponse>('/api/sessions', { query: Object.keys(query).length > 0 ? query : undefined })
-    sessions.value = append ? [...sessions.value, ...result.items] : result.items
-    nextCursor.value = result.nextCursor
-    return result
-  } catch {
-    listError.value = append ? 'Не удалось загрузить следующую страницу диалогов.' : 'Не удалось загрузить список диалогов.'
-    return null
-  } finally {
-    listLoading.value = false
-  }
-}
-
-async function handleNewSession(): Promise<void> {
+async function handleNewSession(projectId?: string | null): Promise<void> {
   if (workspaceBusy.value || deletingId.value) return
+  if (!window.confirm('Создать новую сессию?')) return
   operationError.value = null
   let created = false
   try {
     await modelSave
-    const newSession = await $fetch<SessionSummary>('/api/sessions', { method: 'POST', body: projectFilter.value && projectFilter.value !== 'none' ? { projectId: projectFilter.value } : undefined })
+    const targetProjectId = projectId === undefined ? session.value?.projectId : projectId ?? undefined
+    const newSession = await $fetch<SessionSummary>('/api/sessions', { method: 'POST', body: targetProjectId ? { projectId: targetProjectId } : undefined })
     created = true
     await navigateTo(`/chat/${newSession.id}`)
   } catch {
@@ -259,24 +233,26 @@ async function handleNewSession(): Promise<void> {
 
 async function loadProjects(): Promise<void> {
   try {
-    projects.value = (await memory.loadProjects()).items
+    const loaded: Project[] = []
+    let cursor: string | undefined
+    do {
+      const page = await memory.loadProjects({ limit: 100, ...(cursor ? { cursor } : {}) })
+      loaded.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    projects.value = loaded
     projectError.value = null
   } catch {
     projectError.value = 'Не удалось загрузить проекты.'
   }
 }
 
-async function handleProjectFilter(value: string | undefined): Promise<void> {
-  projectFilter.value = value
-  await loadSessions()
-}
-
 async function handleCreateProject(name: string): Promise<void> {
+  projectError.value = null
   try {
     const project = await $fetch<Project>('/api/projects', { method: 'POST', body: { name } })
-    projects.value = [...projects.value, project]
-    projectFilter.value = project.id
-    await loadSessions()
+    projects.value = [project, ...projects.value]
+    createdProjectId.value = project.id
   } catch (caughtError) {
     projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось создать проект.'
   }
@@ -286,9 +262,11 @@ async function handleRenameProject(payload: { id: string; name: string; expected
   try {
     const project = await $fetch<Project>(`/api/projects/${payload.id}`, { method: 'PATCH', body: payload })
     projects.value = projects.value.map(item => item.id === project.id ? project : item)
+    projectError.value = null
   } catch (caughtError) {
-    projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось переименовать проект.'
+    const message = caughtError instanceof Error ? caughtError.message : 'Не удалось переименовать проект.'
     await loadProjects()
+    projectError.value = message
   }
 }
 
@@ -296,7 +274,9 @@ async function handleAssignProject(projectId: string): Promise<void> {
   if (!session.value || session.value.projectId || workspaceBusy.value) return
   try {
     await $fetch(`/api/sessions/${session.value.id}/project`, { method: 'PATCH', body: { projectId } })
-    await Promise.all([loadSession(), loadSessions()])
+    await loadSession()
+    groupRefreshKey.value++
+    projectError.value = null
   } catch (caughtError) {
     projectError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось подключить диалог к проекту.'
   }
@@ -325,36 +305,31 @@ async function handleSelect(selectedId: string): Promise<void> {
   }
 }
 
-async function handleDelete(sessionToDelete: string): Promise<void> {
+async function handleDelete(item: { id: string; title: string }): Promise<void> {
   if (workspaceBusy.value || deletingId.value) return
-  const item = visibleSessions.value.find(session => session.id === sessionToDelete)
-  if (!item || !window.confirm(`Удалить диалог «${item.title}» и всю его историю? Логи сохранятся.`)) return
+  if (!window.confirm(`Удалить диалог «${item.title}» и всю его историю? Логи сохранятся.`)) return
 
-  deletingId.value = sessionToDelete
+  deletingId.value = item.id
   deleteError.value = null
   let deleted = false
   try {
-    if (sessionToDelete === sessionId.value) await modelSave
-    await $fetch(`/api/sessions/${sessionToDelete}`, { method: 'DELETE' })
+    if (item.id === sessionId.value) await modelSave
+    await $fetch(`/api/sessions/${item.id}`, { method: 'DELETE' })
     deleted = true
-    sessions.value = sessions.value.filter(session => session.id !== sessionToDelete)
-    const remaining = await loadSessions()
-    if (!remaining) throw new Error('Не удалось обновить список диалогов')
-    if (sessionToDelete === sessionId.value) {
+    if (item.id === sessionId.value) {
+      const remaining = await $fetch<SessionListResponse>('/api/sessions')
       const nextId = selectInitialSession(remaining)
       await navigateTo(nextId ? `/chat/${nextId}` : '/', { replace: true })
-    }
+    } else groupRefreshKey.value++
   } catch {
-    if (deleted && sessionToDelete === sessionId.value) {
+    if (deleted && item.id === sessionId.value) {
       try {
         await navigateTo('/', { replace: true })
       } catch {
         deleteError.value = 'Диалог удалён, но не удалось открыть историю.'
       }
     } else {
-      deleteError.value = deleted
-        ? 'Диалог удалён, но список не обновился.'
-        : 'Не удалось удалить диалог. Попробуйте ещё раз.'
+      deleteError.value = 'Не удалось удалить диалог. Попробуйте ещё раз.'
     }
   } finally {
     deletingId.value = null
@@ -375,8 +350,8 @@ async function handleUpdated(): Promise<void> {
       historyClearPending.value = pending !== null
     }).catch(() => undefined),
     loadUserProfiles(),
-    loadSessions(),
   ])
+  groupRefreshKey.value++
 }
 
 async function handleCreateBranch(messageId: string): Promise<void> {
@@ -470,7 +445,7 @@ onMounted(async () => {
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
-  await Promise.all([loadSession(), loadUserProfiles(), loadSessions(), loadProjects()])
+  await Promise.all([loadSession(), loadUserProfiles(), loadProjects()])
   await importLegacyCompactionSettings()
 })
 
@@ -528,8 +503,8 @@ watch(sessionId, () => {
   </main>
   <div v-else class="chat-app-shell">
     <ChatSessionList
-      :items="visibleSessions"
-      :selected-id="session.id"
+      :current-session="session"
+      :refresh-key="groupRefreshKey"
       :model-value="modelId"
       v-model:context-limit="contextLimit"
       :model-save-error="modelSaveError"
@@ -540,7 +515,6 @@ watch(sessionId, () => {
       :configuration-error="configurationError"
       :configuration-save-error="configurationSaveError"
       :configuration-delete-error="configurationDeleteError"
-      :list-error="listError"
       :delete-error="deleteError"
       :deleting-id="deletingId"
       v-model:cost-settings="costSettings"
@@ -549,12 +523,9 @@ watch(sessionId, () => {
       v-model:compaction-threshold="compactionThreshold"
       v-model:context-strategy="contextStrategy"
       :default-model="defaultModel"
-      :loading="listLoading"
       :disabled="workspaceBusy || Boolean(deletingId)"
-      :has-more="Boolean(nextCursor)"
       :projects="projects"
-      :project-filter="projectFilter"
-      :current-project-id="session.projectId"
+      :created-project-id="createdProjectId"
       :project-error="projectError"
       @select="handleSelect"
       @refresh-configurations="loadModelConfigurations"
@@ -564,8 +535,6 @@ watch(sessionId, () => {
       @delete-configuration="handleDeleteModelConfiguration"
       @new-session="handleNewSession"
       @delete-session="handleDelete"
-      @load-more="loadSessions(true)"
-      @update:project-filter="handleProjectFilter"
       @create-project="handleCreateProject"
       @rename-project="handleRenameProject"
       @assign-project="handleAssignProject"
