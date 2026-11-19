@@ -1,4 +1,5 @@
 import type { LanguageModelUsage, UIMessage } from 'ai'
+import type { UserProfileSummary } from './user-profile'
 
 export type ChatTokenUsage = Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
   & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>
@@ -209,6 +210,8 @@ export interface StickyFactsUpdateView {
 }
 
 export interface SessionDetail extends SessionSummary {
+  userProfileId: string
+  userProfile: UserProfileSummary
   messages: ChatUIMessage[]
   lastTurn: SessionTurnSummary | null
   modelId: string | null

@@ -674,6 +674,25 @@ textarea {
   }
 }
 
+@media (min-width: 721px) and (max-width: 1100px) {
+  .chat-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.65rem;
+    padding: 0.85rem 0;
+  }
+
+  .chat-header__copy {
+    width: 100%;
+  }
+
+  .chat-header__actions {
+    width: 100%;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+}
+
 @media (max-width: 460px) {
   .chat-status-badge {
     display: none;

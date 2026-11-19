@@ -16,11 +16,12 @@ async function createDatabasePath(): Promise<string> {
 
 function insertSession(db: Database.Database, id = randomUUID()): string {
   const now = '2026-11-10T12:00:00.000Z'
+  const { default_profile_id: defaultProfileId } = db.prepare('SELECT default_profile_id FROM user_profile_settings WHERE id = 1').get() as { default_profile_id: string }
   db.prepare(`
     INSERT INTO sessions
-      (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, now, 'Новый диалог', now, now, null, 'idle', 0)
+      (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision, user_profile_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, now, 'Новый диалог', now, now, null, 'idle', 0, defaultProfileId)
   return id
 }
 
@@ -31,6 +32,17 @@ function insertMessage(db: Database.Database, sessionId: string, position: numbe
       (id, session_id, turn_id, position, role, status, payload_json, storage_version, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(randomUUID(), sessionId, null, position, 'user', 'complete', payload, 1, now, now)
+}
+
+function downgradeUserProfiles(db: Database.Database): void {
+  db.exec(`
+    DROP TRIGGER IF EXISTS sessions_user_profile_required_insert;
+    DROP TRIGGER IF EXISTS sessions_user_profile_required_update;
+    DROP INDEX IF EXISTS sessions_user_profile_idx;
+    DROP TABLE IF EXISTS user_profile_settings;
+    ALTER TABLE sessions DROP COLUMN user_profile_id;
+    DROP TABLE IF EXISTS user_profiles;
+  `)
 }
 
 afterEach(async () => {
@@ -49,11 +61,12 @@ describe('chat database', () => {
     expect(first.pragma('foreign_keys', { simple: true })).toBe(1)
     expect(first.pragma('busy_timeout', { simple: true })).toBe(1000)
     expect(first.pragma('synchronous', { simple: true })).toBe(2)
-    expect(first.pragma('user_version', { simple: true })).toBe(12)
+    expect(first.pragma('user_version', { simple: true })).toBe(13)
     first.close()
 
     const second = openChatDatabase(filePath)
-    expect(second.pragma('user_version', { simple: true })).toBe(12)
+    expect(second.pragma('user_version', { simple: true })).toBe(13)
+    expect(second.prepare('SELECT name, instructions FROM user_profiles').get()).toEqual({ name: 'Основной', instructions: '' })
     expect(second.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' ORDER BY name").all()).toEqual([
       { name: 'cleared_requests' },
       { name: 'cleared_tool_calls' },
@@ -72,6 +85,8 @@ describe('chat database', () => {
       { name: 'sessions' },
       { name: 'tool_executions' },
       { name: 'turns' },
+      { name: 'user_profile_settings' },
+      { name: 'user_profiles' },
       { name: 'working_memory_entries' },
     ])
     second.close()
@@ -101,8 +116,12 @@ describe('chat database', () => {
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(12)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
     expect(upgraded.prepare('SELECT model_id FROM sessions WHERE id = ?').get('old-session')).toEqual({ model_id: null })
+    expect(upgraded.prepare(`SELECT s.user_profile_id, p.name FROM sessions s JOIN user_profiles p ON p.id = s.user_profile_id WHERE s.id = ?`).get('old-session'))
+      .toMatchObject({ user_profile_id: expect.any(String), name: 'Основной' })
+    expect(upgraded.prepare('SELECT default_profile_id FROM user_profile_settings WHERE id = 1').get())
+      .toEqual(upgraded.prepare('SELECT user_profile_id AS default_profile_id FROM sessions WHERE id = ?').get('old-session'))
     upgraded.close()
   })
 
@@ -110,10 +129,12 @@ describe('chat database', () => {
     const filePath = await createDatabasePath()
     const oldDb = openChatDatabase(filePath)
     oldDb.exec('ALTER TABLE turns DROP COLUMN stop_reason; PRAGMA user_version = 2;')
+    downgradeUserProfiles(oldDb)
+    oldDb.pragma('user_version = 2')
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(12)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
     expect(upgraded.pragma('table_info(turns)')).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'stop_reason' }),
     ]))
@@ -131,11 +152,12 @@ describe('chat database', () => {
       INSERT INTO turns (id, session_id, request_id, position, status, model_id, agent_config_json, started_at, updated_at, stop_reason)
       VALUES (?, ?, ?, 0, 'interrupted', 'mock', '{}', ?, ?, 'timeout')
     `).run(turnId, sessionId, turnId, now, now)
+    downgradeUserProfiles(oldDb)
     oldDb.pragma('user_version = 3')
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(12)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
     expect(upgraded.prepare('SELECT stop_reason FROM turns WHERE id = ?').get(turnId)).toEqual({ stop_reason: 'timeout' })
     upgraded.prepare("UPDATE turns SET stop_reason = 'rate_limit' WHERE id = ?").run(turnId)
     upgraded.close()
@@ -160,10 +182,12 @@ describe('chat database', () => {
       'projects',
     ]) db.exec(`DROP TABLE ${table}`)
     db.exec('ALTER TABLE sessions DROP COLUMN project_id; PRAGMA user_version = 8')
+    downgradeUserProfiles(db)
+    db.pragma('user_version = 8')
     db.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(12)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
     expect(upgraded.prepare('SELECT payload_json FROM messages WHERE session_id = ?').get(sessionId)).toEqual({
       payload_json: JSON.stringify({ id: 'version-8-message', role: 'user', parts: [{ type: 'text', text: 'Старое сообщение' }] }),
     })

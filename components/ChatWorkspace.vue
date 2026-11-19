@@ -4,6 +4,7 @@ import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
 import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
 import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
+import type { UserProfileSummary } from '~/shared/user-profile'
 
 const props = defineProps<{
   session: SessionDetail
@@ -18,6 +19,9 @@ const props = defineProps<{
   showDetailedStatistics?: boolean
   operationError?: string | null
   historyClearPending?: boolean
+  userProfiles: UserProfileSummary[]
+  userProfilesLoading?: boolean
+  profileSelectionError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -27,6 +31,7 @@ const emit = defineEmits<{
   dismissOperationError: []
   createBranch: [messageId: string]
   saveMemory: [payload: { text: string; source: { sourceSessionId: string; sourceMessageId: string } }]
+  selectProfile: [profileId: string]
 }>()
 
 const draft = shallowRef('')
@@ -300,6 +305,15 @@ function dismissError(): void {
         </div>
       </div>
       <div class="chat-header__actions">
+        <UserProfileSelector
+          :items="props.userProfiles"
+          :model-value="props.session.userProfileId"
+          :disabled="isBusy"
+          :loading="props.userProfilesLoading"
+          :error="props.profileSelectionError"
+          @select="emit('selectProfile', $event)"
+        />
+        <UButton color="neutral" variant="soft" icon="i-lucide-user-round-cog" :to="{ path: '/profiles', query: { sessionId: props.session.id, profileId: props.session.userProfileId } }">Профили</UButton>
         <UButton color="neutral" variant="soft" icon="i-lucide-brain" :to="{ path: '/memory', query: { sessionId: props.session.id, ...(props.session.projectId ? { projectId: props.session.projectId } : {}) } }">Память</UButton>
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
         <UButton class="chat-new-session" color="neutral" variant="soft" icon="i-lucide-square-pen" aria-label="Новая сессия" :disabled="isBusy" @click="emit('newSession')">
@@ -417,6 +431,8 @@ function dismissError(): void {
   font-size: .75rem;
   overflow-wrap: anywhere;
 }
+
+.chat-header__actions { flex-wrap: wrap; align-items: start; }
 
 .sticky-facts-panel {
   margin: 0 1.25rem .75rem;

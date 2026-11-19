@@ -6,6 +6,8 @@ import type { ChatRequestBody, ChatUIMessage } from '../../shared/chat'
 import { assertMemoryBudgets, createMemorySnapshot } from './context'
 import { assertHistoryAvailable } from './clear-repository'
 import type { MemorySnapshot } from '../../shared/memory'
+import { createUserProfileRepository } from '../persistence/user-profile-repository'
+import type { UserProfileSnapshot } from '../../shared/user-profile'
 
 function promptOverhead(agentConfig: Record<string, unknown>): number {
   const instructions = agentConfig.instructions
@@ -24,33 +26,39 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
   request: ChatRequestBody
   modelId: string
   agentConfig: Record<string, unknown>
-}): { turnId: string; snapshot: MemorySnapshot } {
-  assertHistoryAvailable(db, input.request.sessionId)
-  const snapshot = createMemorySnapshot(db, input.request.sessionId, input.request.message)
-  assertMemoryBudgets(snapshot)
-  assertImmediateMemoryWindow(snapshot, input.request, input.agentConfig)
-  const turns = createTurnRepository(db)
-  if (input.request.kind === 'message') {
-    const started = turns.beginUserTurn({
+  createAgentConfig?: (profileSnapshot: UserProfileSnapshot) => Record<string, unknown>
+}): { turnId: string; snapshot: MemorySnapshot; profileSnapshot: UserProfileSnapshot; agentConfig: Record<string, unknown> } {
+  const transaction = db.transaction(() => {
+    assertHistoryAvailable(db, input.request.sessionId)
+    const profileSnapshot = createUserProfileRepository(db).getForTurn(input.request.sessionId)
+    const agentConfig = input.createAgentConfig?.(profileSnapshot) ?? input.agentConfig
+    const snapshot = createMemorySnapshot(db, input.request.sessionId, input.request.message)
+    assertMemoryBudgets(snapshot)
+    assertImmediateMemoryWindow(snapshot, input.request, agentConfig)
+    const turns = createTurnRepository(db)
+    if (input.request.kind === 'message') {
+      const started = turns.beginUserTurn({
+        sessionId: input.request.sessionId,
+        requestId: input.request.requestId,
+        modelId: input.modelId,
+        message: input.request.message as ChatUIMessage,
+        agentConfig,
+      })
+      return { turnId: started.turnId, snapshot, profileSnapshot, agentConfig }
+    }
+    const continuation = turns.assessContinuation(input.request.sourceTurnId)
+    if (continuation === 'not_available') throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${input.request.sourceTurnId} is not available for continuation`)
+    if (continuation === 'needs_review') throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${input.request.sourceTurnId} has an unconfirmed tool result`)
+    const started = turns.beginContinuation({
       sessionId: input.request.sessionId,
       requestId: input.request.requestId,
+      sourceTurnId: input.request.sourceTurnId,
       modelId: input.modelId,
       message: input.request.message as ChatUIMessage,
-      agentConfig: input.agentConfig,
+      agentConfig,
     })
-    return { turnId: started.turnId, snapshot }
-  }
-  const continuation = turns.assessContinuation(input.request.sourceTurnId)
-  if (continuation === 'not_available') throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${input.request.sourceTurnId} is not available for continuation`)
-  if (continuation === 'needs_review') throw new TurnRepositoryError('CONTINUATION_NEEDS_REVIEW', `turn ${input.request.sourceTurnId} has an unconfirmed tool result`)
-  const started = turns.beginContinuation({
-    sessionId: input.request.sessionId,
-    requestId: input.request.requestId,
-    sourceTurnId: input.request.sourceTurnId,
-    modelId: input.modelId,
-    message: input.request.message as ChatUIMessage,
-    agentConfig: input.agentConfig,
+    return { turnId: started.turnId, snapshot, profileSnapshot, agentConfig }
   })
-  return { turnId: started.turnId, snapshot }
+  return transaction.immediate()
 }
 

@@ -8,6 +8,7 @@ import { selectInitialSession } from '~/shared/session-navigation'
 import { useMemory } from '~/composables/useMemory'
 import type { Project, MemorySource } from '~/shared/memory'
 import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
+import type { UserProfileSummary } from '~/shared/user-profile'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -35,6 +36,9 @@ const contextLimit = computed({
 })
 const pricing = computed(() => pricingFromSettings(costSettings.value))
 const session = shallowRef<SessionDetail | null>(null)
+const userProfiles = shallowRef<UserProfileSummary[]>([])
+const userProfilesLoading = shallowRef(false)
+const profileSelectionError = shallowRef<string | null>(null)
 const sessions = shallowRef<SessionSummary[]>([])
 const nextCursor = shallowRef<string | undefined>()
 const loading = shallowRef(true)
@@ -93,6 +97,36 @@ async function loadSession(): Promise<void> {
     error.value = caughtError instanceof Error ? caughtError.message : 'Сессия не найдена'
   } finally {
     if (sessionId.value === requestedId) loading.value = false
+  }
+}
+
+async function loadUserProfiles(): Promise<void> {
+  userProfilesLoading.value = true
+  try {
+    const result = await $fetch<{ items: UserProfileSummary[] }>('/api/user-profiles')
+    userProfiles.value = result.items
+    profileSelectionError.value = null
+  } catch (caughtError) {
+    profileSelectionError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось загрузить профили.'
+  } finally {
+    userProfilesLoading.value = false
+  }
+}
+
+async function handleSelectProfile(profileId: string): Promise<void> {
+  const current = session.value
+  if (!current || workspaceBusy.value || current.userProfileId === profileId) return
+  profileSelectionError.value = null
+  try {
+    const result = await $fetch<{ userProfileId: string; userProfile: UserProfileSummary }>(`/api/sessions/${current.id}/user-profile`, {
+      method: 'PATCH',
+      body: { profileId },
+    })
+    if (session.value?.id === current.id) {
+      session.value = { ...current, userProfileId: result.userProfileId, userProfile: result.userProfile }
+    }
+  } catch (caughtError) {
+    profileSelectionError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось выбрать профиль.'
   }
 }
 
@@ -340,6 +374,7 @@ async function handleUpdated(): Promise<void> {
     memory.loadPendingHistoryClear(id).then(pending => {
       historyClearPending.value = pending !== null
     }).catch(() => undefined),
+    loadUserProfiles(),
     loadSessions(),
   ])
 }
@@ -435,7 +470,7 @@ onMounted(async () => {
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
-  await Promise.all([loadSession(), loadSessions(), loadProjects()])
+  await Promise.all([loadSession(), loadUserProfiles(), loadSessions(), loadProjects()])
   await importLegacyCompactionSettings()
 })
 
@@ -549,12 +584,16 @@ watch(sessionId, () => {
       :context-strategy="contextStrategy"
       :operation-error="operationError"
       :history-clear-pending="historyClearPending"
+      :user-profiles="userProfiles"
+      :user-profiles-loading="userProfilesLoading"
+      :profile-selection-error="profileSelectionError"
       @new-session="handleNewSession"
       @updated="handleUpdated"
       @busy-change="workspaceBusy = $event"
       @dismiss-operation-error="operationError = null"
       @create-branch="handleCreateBranch"
       @save-memory="handleSaveMemory"
+      @select-profile="handleSelectProfile"
     />
     <MemoryEntryForm
       :open="memoryFormOpen"

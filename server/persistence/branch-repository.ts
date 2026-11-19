@@ -41,6 +41,7 @@ export function createBranchRepository(db: Database.Database) {
         context_strategy_json: string
         status: ChatSessionStatus
         project_id: string | null
+        user_profile_id: string
       } | undefined
       if (!parent) throw new BranchRepositoryError('SESSION_NOT_FOUND', 'parent session was not found')
       try {
@@ -79,9 +80,9 @@ export function createBranchRepository(db: Database.Database) {
       db.prepare(`
         INSERT INTO sessions
           (id, run_log_id, title, created_at, updated_at, status, revision, model_id,
-           context_strategy_json, parent_session_id, branch_source_message_id, project_id)
-        VALUES (?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?)
-      `).run(childId, runLogId, title, timestamp, timestamp, parent.model_id, JSON.stringify(contextStrategy), parent.id, point.id, parent.project_id)
+           context_strategy_json, parent_session_id, branch_source_message_id, project_id, user_profile_id)
+        VALUES (?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?, ?)
+      `).run(childId, runLogId, title, timestamp, timestamp, parent.model_id, JSON.stringify(contextStrategy), parent.id, point.id, parent.project_id, parent.user_profile_id)
 
       const messages = db.prepare(`
         SELECT id, position, role, status, payload_json, storage_version, created_at, updated_at

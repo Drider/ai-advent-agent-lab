@@ -7,6 +7,7 @@ import { getAgentConfig, streamChatAgent } from '../agent/chat-agent'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createSaveMemoryTool } from '../tools/memory'
 import { createModelConfigurationTools } from '../tools/model-configurations'
+import { createUserProfileTools } from '../tools/user-profiles'
 import { getChatDatabase } from '../persistence/db'
 import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
@@ -69,18 +70,22 @@ export default defineEventHandler(async (event) => {
     enabled: contextStrategy.strategy === 'summary' && legacyCompaction.enabled,
     messageThreshold: contextStrategy.messageThreshold,
   }
-  const agentConfig = getAgentConfig(compactionSettings, contextStrategy)
   const model = provider.chat(chatConfig.modelId)
   let turnId: string
   let memorySnapshot: MemorySnapshot
+  let profileSnapshot
+  let agentConfig: Record<string, unknown>
   try {
     const started = startMemoryAwareTurn(db, {
       request,
       modelId: chatConfig.modelId,
-      agentConfig,
+      agentConfig: getAgentConfig(compactionSettings, contextStrategy),
+      createAgentConfig: profile => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue'),
     })
     turnId = started.turnId
     memorySnapshot = started.snapshot
+    profileSnapshot = started.profileSnapshot
+    agentConfig = started.agentConfig
   } catch (error) {
     if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
       throw createError({ statusCode: 409, statusMessage: error.message })
@@ -171,10 +176,12 @@ export default defineEventHandler(async (event) => {
       sessionId: request.sessionId,
       turnId,
       memoryMetadata: memorySnapshot.transientMemory,
+      profileSnapshot,
       turnRepository: turns,
       disableMutatingTools: request.kind === 'continue',
       saveMemoryTool: createSaveMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
       modelConfigurationTools: createModelConfigurationTools({ db }),
+      userProfileTools: createUserProfileTools({ db, sessionId: request.sessionId, turnId }),
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),

@@ -8,6 +8,7 @@ import { createTurnRepository } from './turn-repository'
 import { createFactsRepository } from '../context-compaction/facts-repository'
 import { MemoryError } from '../memory/errors'
 import { assertHistoryAvailable } from '../memory/clear-repository'
+import { createUserProfileRepository } from './user-profile-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   DEFAULT_CONTEXT_STRATEGY_SETTINGS,
@@ -53,6 +54,7 @@ interface SessionRow {
   parent_session_id: string | null
   branch_source_message_id: string | null
   project_id: string | null
+  user_profile_id: string
 }
 
 interface MessageRow {
@@ -285,15 +287,11 @@ async function decodeMessage(row: MessageRow): Promise<ChatUIMessage> {
 
 export function createSessionRepository(db: Database.Database) {
   const findSession = db.prepare('SELECT * FROM sessions WHERE id = ?')
-  const insertSession = db.prepare(`
-    INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision, project_id)
-    VALUES (?, ?, ?, ?, ?, NULL, 'idle', 0, ?)
-  `)
-
-  function createSession(options: { projectId?: string } = {}): SessionSummary {
+  const createSessionTransaction = db.transaction((options: { projectId?: string } = {}): SessionSummary => {
     if (options.projectId !== undefined && !db.prepare('SELECT 1 FROM projects WHERE id = ?').get(options.projectId)) {
       throw new MemoryError('NOT_FOUND', 'project was not found')
     }
+    const profileId = createUserProfileRepository(db).getDefaultId()
     const id = randomUUID()
     let timestamp = Date.now()
     let runLogId = new Date(timestamp).toISOString()
@@ -308,7 +306,10 @@ export function createSessionRepository(db: Database.Database) {
       runLogId = new Date(timestamp).toISOString()
     }
 
-    insertSession.run(id, runLogId, 'Новый диалог', runLogId, runLogId, options.projectId ?? null)
+    db.prepare(`
+      INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, last_opened_at, status, revision, project_id, user_profile_id)
+      VALUES (?, ?, ?, ?, ?, NULL, 'idle', 0, ?, ?)
+    `).run(id, runLogId, 'Новый диалог', runLogId, runLogId, options.projectId ?? null, profileId)
     return {
       id,
       runLogId,
@@ -319,6 +320,10 @@ export function createSessionRepository(db: Database.Database) {
       revision: 0,
       ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
     }
+  })
+
+  function createSession(options: { projectId?: string } = {}): SessionSummary {
+    return createSessionTransaction.immediate(options)
   }
 
   function listSessions(options: { limit?: number; cursor?: string; projectId?: string | null } = {}): {
@@ -422,6 +427,8 @@ export function createSessionRepository(db: Database.Database) {
     if (lastTurn) lastTurn.continuation = createTurnRepository(db).assessContinuation(lastTurn.id)
 
     const factsRepository = createFactsRepository(db)
+    const userProfile = createUserProfileRepository(db).getForSession(id)
+    if (!userProfile) throw new ChatStorageError('SESSION_NOT_FOUND', `session ${id} has no assigned profile`)
     const parent = row.parent_session_id === null
       ? undefined
       : db.prepare('SELECT id, title, branch_source_message_id, updated_at FROM sessions WHERE id = ?').get(row.parent_session_id) as { id: string; title: string; branch_source_message_id: string | null; updated_at: string } | undefined
@@ -434,6 +441,14 @@ export function createSessionRepository(db: Database.Database) {
 
     return {
       ...toSummary(row, getTitle(db, row.id, row.title)),
+      userProfileId: userProfile.id,
+      userProfile: {
+        id: userProfile.id,
+        name: userProfile.name,
+        revision: userProfile.revision,
+        createdAt: userProfile.createdAt,
+        updatedAt: userProfile.updatedAt,
+      },
       messages,
       lastTurn,
       modelId: row.model_id,

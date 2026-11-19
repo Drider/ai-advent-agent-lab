@@ -24,6 +24,7 @@ import type { ChatUIMessage } from '../shared/chat'
 import { createDiceTool, createListSavedRollsTool } from '../server/tools/dice'
 import { createFileTools, type FileTools } from '../server/tools/files'
 import { createSessionTools } from '../server/tools/sessions'
+import { createUserProfileTools } from '../server/tools/user-profiles'
 
 const usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -199,6 +200,32 @@ function createTestFileTools() {
 }
 
 describe('chat agent', () => {
+  it('includes the full user profile in every model step without adding it to chat history', async () => {
+    const profileSnapshot = {
+      id: randomUUID(),
+      name: 'Кратко',
+      revision: 4,
+      instructions: 'Отвечай коротко и отмечай ограничения.',
+    }
+    const model = new MockLanguageModelV3({
+      doGenerate: [toolCallResult('profile-roll', 20), textResult('Кубик брошен.')],
+    })
+
+    await createChatAgent(
+      model,
+      createTestDiceTool(fixedDraw(17)),
+      { profileSnapshot },
+    ).generate({ prompt: 'Брось d20' })
+
+    expect(model.doGenerateCalls).toHaveLength(2)
+    for (const call of model.doGenerateCalls) {
+      expect(call.prompt).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'system', content: expect.stringContaining('Отвечай коротко и отмечай ограничения.') }),
+      ]))
+      expect(JSON.stringify(call.prompt.filter(message => message.role !== 'system'))).not.toContain('Отвечай коротко')
+    }
+  })
+
   it('executes a dice tool and feeds its result into the next model step', async () => {
     const model = new MockLanguageModelV3({
       doGenerate: [
@@ -485,6 +512,46 @@ describe('chat agent', () => {
     expect(body).toContain(runId)
     expect(body).toContain('currentRequestPersisted')
     expect(body).toContain('Текущая сессия пока не сохранена.')
+  })
+
+  it('records user profile tool input and result as durable tool execution', async () => {
+    const db = openChatDatabase(join(fileDirectory, 'chat.sqlite'))
+    const session = createSessionRepository(db).createSession()
+    const turns = createTurnRepository(db)
+    const message = userMessage('Покажи доступные профили') as ChatUIMessage
+    const turn = turns.beginUserTurn({
+      sessionId: session.id,
+      requestId: randomUUID(),
+      modelId: 'mock-model',
+      message,
+      agentConfig: {},
+    })
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamFileToolCallResult('profile-list-1', 'list_user_profiles', {}),
+        streamTextResult('Доступные профили показаны.'),
+      ],
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [message],
+      runId: session.runLogId,
+      logLevel: 'off',
+      sessionId: session.id,
+      turnId: turn.turnId,
+      turnRepository: turns,
+      userProfileTools: createUserProfileTools({ db, sessionId: session.id, turnId: turn.turnId }),
+    })
+    await response.text()
+
+    expect(db.prepare('SELECT tool_name, status FROM tool_executions WHERE turn_id = ?').get(turn.turnId)).toEqual({
+      tool_name: 'list_user_profiles',
+      status: 'completed',
+    })
+    expect(turns.getLastTurn(session.id)).toMatchObject({ status: 'completed' })
+    db.close()
   })
 
   it('continues a saved dialogue with instructions outside UI messages', async () => {

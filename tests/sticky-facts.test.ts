@@ -58,8 +58,9 @@ describe('sticky facts', () => {
     directories.push(directory)
     const db = openChatDatabase(join(directory, 'chat.sqlite'))
     const sessionId = '11111111-1111-4111-8111-111111111111'
-    db.prepare('INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, status, revision) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(sessionId, 'run-facts', 'Facts', new Date().toISOString(), new Date().toISOString(), 'idle', 0)
+    const { default_profile_id: defaultProfileId } = db.prepare('SELECT default_profile_id FROM user_profile_settings WHERE id = 1').get() as { default_profile_id: string }
+    db.prepare('INSERT INTO sessions (id, run_log_id, title, created_at, updated_at, status, revision, user_profile_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(sessionId, 'run-facts', 'Facts', new Date().toISOString(), new Date().toISOString(), 'idle', 0, defaultProfileId)
     const repository = createFactsRepository(db)
     repository.saveFactsUpdate({
       sessionId,

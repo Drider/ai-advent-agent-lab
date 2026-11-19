@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 
-export const CHAT_SCHEMA_VERSION = 12
+export const CHAT_SCHEMA_VERSION = 13
+
+export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
 function uniqueMigrationName(name: string, usedKeys: Set<string>, existingKeys: Set<string>): string {
   for (let suffix = 2; suffix < 10_000; suffix += 1) {
@@ -374,6 +376,46 @@ export function migrateChatDatabase(db: Database.Database): void {
       if (!columns.some(column => column.name === 'exclusions_json')) {
         db.exec("ALTER TABLE memory_usage_events ADD COLUMN exclusions_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(exclusions_json))")
       }
+    }
+    if (currentVersion < 13) {
+      const timestamp = new Date().toISOString()
+      db.exec(`
+        CREATE TABLE user_profiles (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+          name_key TEXT NOT NULL UNIQUE,
+          instructions TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE user_profile_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          default_profile_id TEXT NOT NULL REFERENCES user_profiles(id) ON DELETE RESTRICT,
+          updated_at TEXT NOT NULL
+        );
+      `)
+      db.prepare(`
+        INSERT INTO user_profiles (id, name, name_key, instructions, revision, created_at, updated_at)
+        VALUES (?, 'Основной', 'основной', '', 0, ?, ?)
+      `).run(INITIAL_USER_PROFILE_ID, timestamp, timestamp)
+      db.prepare(`
+        INSERT INTO user_profile_settings (id, default_profile_id, updated_at)
+        VALUES (1, ?, ?)
+      `).run(INITIAL_USER_PROFILE_ID, timestamp)
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN user_profile_id TEXT REFERENCES user_profiles(id) ON DELETE RESTRICT;
+      `)
+      db.prepare('UPDATE sessions SET user_profile_id = ? WHERE user_profile_id IS NULL').run(INITIAL_USER_PROFILE_ID)
+      db.exec(`
+        CREATE TRIGGER sessions_user_profile_required_insert
+        BEFORE INSERT ON sessions WHEN NEW.user_profile_id IS NULL
+        BEGIN SELECT RAISE(ABORT, 'sessions.user_profile_id is required'); END;
+        CREATE TRIGGER sessions_user_profile_required_update
+        BEFORE UPDATE OF user_profile_id ON sessions WHEN NEW.user_profile_id IS NULL
+        BEGIN SELECT RAISE(ABORT, 'sessions.user_profile_id is required'); END;
+        CREATE INDEX sessions_user_profile_idx ON sessions (user_profile_id, updated_at DESC);
+      `)
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')

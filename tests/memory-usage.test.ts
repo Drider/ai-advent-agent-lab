@@ -85,6 +85,14 @@ describe('memory usage events', () => {
     const event = createMemoryUsageRepository(db).recordPrepared({ turnId: 'old-turn', snapshot: createMemorySnapshot(db, session.id), shortTerm: { count: 2, bytes: 20, estimatedTokens: 10 } })
     const columns = db.prepare("SELECT name FROM pragma_table_info('memory_usage_events')").all() as Array<{ name: string }>
     if (columns.some(column => column.name === 'exclusions_json')) db.exec('ALTER TABLE memory_usage_events DROP COLUMN exclusions_json')
+    db.exec(`
+      DROP TRIGGER IF EXISTS sessions_user_profile_required_insert;
+      DROP TRIGGER IF EXISTS sessions_user_profile_required_update;
+      DROP INDEX IF EXISTS sessions_user_profile_idx;
+      DROP TABLE user_profile_settings;
+      ALTER TABLE sessions DROP COLUMN user_profile_id;
+      DROP TABLE user_profiles;
+    `)
     db.pragma('user_version = 11')
 
     migrateChatDatabase(db)
