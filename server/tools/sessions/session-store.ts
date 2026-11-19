@@ -4,7 +4,7 @@ import { failure, success } from '../files/file-tool-contracts'
 import { createFileWorkspace } from '../files/file-workspace'
 import { parseSessionLog, type SessionLog } from './session-analysis'
 
-export const MAX_SESSION_FILE_BYTES = 2 * 1024 * 1024
+export const MAX_SESSION_FILE_BYTES = 50 * 1024 * 1024
 const MAX_SESSION_FILES = 100
 
 export interface SessionStoreOptions {

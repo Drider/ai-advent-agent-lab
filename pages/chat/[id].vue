@@ -3,7 +3,7 @@ import { computed, onMounted, shallowRef, watch } from 'vue'
 import ChatSessionList from '~/components/ChatSessionList.vue'
 import ChatWorkspace from '~/components/ChatWorkspace.vue'
 import MemoryEntryForm from '~/components/MemoryEntryForm.vue'
-import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, pricingFromSettings, validateContextStrategySettings, validateModelId, type ChatCostSettings, type ChatContextStrategySettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
+import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, normalizeStoredContextLimits, pricingFromSettings, validateContextStrategySettings, validateModelId, type ChatCostSettings, type ChatContextStrategySettings, type SessionDetail, type SessionSummary } from '~/shared/chat'
 import { selectInitialSession } from '~/shared/session-navigation'
 import { useMemory } from '~/composables/useMemory'
 import type { Project, MemorySource } from '~/shared/memory'
@@ -405,9 +405,7 @@ async function importLegacyCompactionSettings(): Promise<void> {
 onMounted(async () => {
   try {
     const saved = JSON.parse(localStorage.getItem('agent-chat-context-limits-v1') ?? '{}') as unknown
-    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
-      contextLimits.value = Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
-    }
+    contextLimits.value = normalizeStoredContextLimits(saved)
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }

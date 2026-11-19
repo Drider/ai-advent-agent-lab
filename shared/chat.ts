@@ -66,6 +66,15 @@ export function parseContextLimit(value: string): number | undefined {
   return Number.isSafeInteger(limit) ? limit : undefined
 }
 
+export function normalizeStoredContextLimits(input: unknown): Record<string, string> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  return Object.fromEntries(Object.entries(input).flatMap(([model, limit]) => {
+    if (typeof limit === 'string') return [[model, limit]]
+    if (typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0) return [[model, String(limit)]]
+    return []
+  }))
+}
+
 // Each agent step is a separate model call. The context limit applies to one
 // call's input plus output, not to input accumulated across multiple calls.
 export function latestContextUsage(messages: ChatUIMessage[], limit?: number) {

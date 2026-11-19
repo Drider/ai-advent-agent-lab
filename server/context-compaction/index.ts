@@ -1,5 +1,5 @@
 export { prepareSessionContext } from './prepare'
-export { summarizeOldContext, SUMMARY_MAX_OUTPUT_TOKENS, SUMMARY_PROMPT_VERSION } from './summarizer'
+export { summarizeOldContext, SUMMARY_PROMPT_VERSION } from './summarizer'
 export { decideCompaction } from './policy'
 export { createCompactionRepository } from './repository'
 export { assertStepWithinBudget, ContextLimitError } from './step-guard'

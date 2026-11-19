@@ -3,7 +3,6 @@ import type { ChatTokenUsage } from '../../shared/chat'
 import type { StoredContextMessage } from './types'
 
 export const SUMMARY_PROMPT_VERSION = 1
-export const SUMMARY_MAX_OUTPUT_TOKENS = 2_048
 const MAX_SUMMARY_INPUT_CHARACTERS = 80_000
 const MAX_MESSAGE_CHARACTERS = 12_000
 
@@ -67,7 +66,6 @@ export async function summarizeOldContext(input: {
     const result = await generateText({
       model: input.model,
       prompt: buildPrompt(input.messages, input.previousSummary),
-      maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
       abortSignal: input.abortSignal,
     })
     const text = result.text.trim()

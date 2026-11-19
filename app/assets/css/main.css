@@ -29,6 +29,9 @@ body {
 
 .chat-app-shell {
   display: flex;
+  position: fixed;
+  inset: 0;
+  width: 100%;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
@@ -429,6 +432,7 @@ textarea {
 
 .message-content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.6rem;
   min-width: 0;
 }

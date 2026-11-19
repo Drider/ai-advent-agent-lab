@@ -223,7 +223,7 @@ function save(): void {
 
         <label class="settings-modal__field">
           <span>Размер контекстного окна, токенов</span>
-          <input v-model="draftContextLimit" type="number" min="1" step="1" placeholder="Не задано">
+          <input :value="draftContextLimit" type="number" min="1" step="1" placeholder="Не задано" @input="draftContextLimit = ($event.target as HTMLInputElement).value">
         </label>
 
         <label class="settings-modal__field">
