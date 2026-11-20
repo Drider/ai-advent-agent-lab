@@ -74,6 +74,26 @@ it('requires an approved plan and structurally valid files for the code result',
   await task.ok({ type: 'validate' })
   expect(await task.go('done')).toMatchObject({ status: 'done', result: { key: 'implementation' } })
 })
+it('rejects array-wrapped answers, plans and implementations at their structural checks', async () => {
+  const questionnaire = taskFor('questionnaire')
+  await questionnaire.attach()
+  await questionnaire.ok(material('answers', [{ goal: 'Goal', experience: 'Experience', responseFormat: 'Format' }]))
+  await questionnaire.go('validate_answers')
+  await questionnaire.ok({ type: 'validate' })
+  expect(questionnaire.view().validations).toMatchObject([{ checkId: 'answers_filled', outcome: 'failed' }])
+
+  const code = taskFor('code')
+  await code.attach()
+  await code.ok(material('plan', [{ text: 'Plan' }]))
+  await code.go('approve_plan')
+  await code.ok({ type: 'approve', approvalId: code.view().approvals[0]!.id }, 'user')
+  await code.ok(material('implementation', [{ language: 'ts', files: [{ path: 'a.ts', content: 'export {}' }] }]))
+  await code.go('validation')
+  await code.ok({ type: 'validate' })
+  expect(code.view().validations.map(row => [row.checkId, row.outcome]))
+    .toEqual([['plan_structure', 'failed'], ['implementation_structure', 'failed']])
+})
+
 it('imports canonical analytics data only from a confirmed read in the collection visit', async () => {
   const task = taskFor('analytics')
   await task.attach()

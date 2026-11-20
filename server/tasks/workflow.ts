@@ -8,6 +8,8 @@ export interface WorkflowEvidence {
   validations: ValidationResult[]
 }
 
+export type EvaluationPhase = 'preflight' | 'commit'
+
 type Decision = { allowed: true; targetNodeId: string } | { allowed: false; code: TaskErrorCode }
 
 function sameRef(left: ArtifactRef, right: ArtifactRef) {
@@ -41,32 +43,37 @@ function checkOutcome(task: TaskSnapshot, definition: WorkflowDefinition, eviden
   })) return latest.outcome
 }
 
-function guardError(task: TaskSnapshot, definition: WorkflowDefinition, evidence: WorkflowEvidence, guard: Guard): TaskErrorCode | null {
+function guardError(task: TaskSnapshot, definition: WorkflowDefinition, evidence: WorkflowEvidence, guard: Guard,
+  pendingPasses: string[] = []): TaskErrorCode | null {
   switch (guard.kind) {
     case 'artifact_present':
       return currentArtifact(task, evidence, guard.artifactKey) ? null : 'TRANSITION_NOT_ALLOWED'
     case 'approval_current':
       return hasApproval(task, evidence, guard.artifactKey) ? null : 'PLAN_APPROVAL_REQUIRED'
     case 'checks_current':
-      return guard.checkIds.length && guard.checkIds.every(id => checkOutcome(task, definition, evidence, id) === 'passed')
+      return guard.checkIds.length && guard.checkIds.every(id => pendingPasses.includes(id) || checkOutcome(task, definition, evidence, id) === 'passed')
         ? null : 'VALIDATION_REQUIRED'
     case 'checks_failed_current':
       return guard.checkIds.some(id => {
+        if (pendingPasses.includes(id)) return false
         const outcome = checkOutcome(task, definition, evidence, id)
         return outcome === 'failed' || outcome === 'error'
       }) ? null : 'VALIDATION_REQUIRED'
   }
 }
 
-export function completionError(task: TaskSnapshot, definition: WorkflowDefinition, evidence: WorkflowEvidence): TaskErrorCode | null {
-  const code = guardError(task, definition, evidence, { kind: 'checks_current', checkIds: definition.completionCheckIds })
-  if (code) return code
+export function completionError(task: TaskSnapshot, definition: WorkflowDefinition, evidence: WorkflowEvidence,
+  phase: EvaluationPhase = 'commit'): TaskErrorCode | null {
+  if (phase === 'commit') {
+    const code = guardError(task, definition, evidence, { kind: 'checks_current', checkIds: definition.completionCheckIds })
+    if (code) return code
+  }
   const result = currentArtifact(task, evidence, definition.resultArtifactKey)
   return result && nonempty(result.content) ? null : 'INVALID_INPUT'
 }
 
 export function evaluateTransition(task: TaskSnapshot, definition: WorkflowDefinition, transitionId: string,
-  evidence: WorkflowEvidence, actor: TaskActorContext): Decision {
+  evidence: WorkflowEvidence, actor: TaskActorContext, phase: EvaluationPhase = 'commit'): Decision {
   if (task.sessionId !== actor.sessionId) return { allowed: false, code: 'NOT_FOUND' }
   if (task.status === 'paused') return { allowed: false, code: 'TASK_PAUSED' }
   if (task.status === 'cancelled') return { allowed: false, code: 'TASK_CANCELLED' }
@@ -80,8 +87,10 @@ export function evaluateTransition(task: TaskSnapshot, definition: WorkflowDefin
     || edge.actor !== actor.role || (actor.stepNodeVisitId !== undefined && actor.stepNodeVisitId !== task.nodeVisitId)) {
     return { allowed: false, code: 'TRANSITION_NOT_ALLOWED' }
   }
+  // Reserving a completion schedules these checks. Their actual outcomes gate the commit.
+  const pendingPasses = target.kind === 'success' && phase === 'preflight' ? definition.completionCheckIds : []
   if (target.kind === 'success') {
-    const code = completionError(task, definition, evidence)
+    const code = completionError(task, definition, evidence, phase)
     if (code) return { allowed: false, code }
   }
   if (target.kind === 'approval' && !currentArtifact(task, evidence, target.expected.artifactKey ?? '')) {
@@ -97,11 +106,11 @@ export function evaluateTransition(task: TaskSnapshot, definition: WorkflowDefin
   }
   if (edge.event === 'checks_passed' || edge.event === 'checks_failed') {
     const kind = edge.event === 'checks_passed' ? 'checks_current' : 'checks_failed_current'
-    const code = guardError(task, definition, evidence, { kind, checkIds: source.checkIds })
+    const code = guardError(task, definition, evidence, { kind, checkIds: source.checkIds }, pendingPasses)
     if (code) return { allowed: false, code }
   }
   for (const guard of edge.guards) {
-    const code = guardError(task, definition, evidence, guard)
+    const code = guardError(task, definition, evidence, guard, pendingPasses)
     if (code) return { allowed: false, code }
   }
   return { allowed: true, targetNodeId: target.id }

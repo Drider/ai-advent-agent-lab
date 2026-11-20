@@ -7,11 +7,11 @@ let db: ReturnType<typeof openChatDatabase>
 beforeEach(() => { db = openChatDatabase(':memory:') })
 afterEach(() => db.close())
 
-it('rejects unknown, out-of-order and unchecked success edges without changing the task', async () => {
+it('rejects unknown, out-of-order and resultless success edges without changing the task', async () => {
   const task = fixture(db)
   await task.denied({ type: 'transition', transitionId: 'unknown' }, 'TRANSITION_NOT_ALLOWED')
   await task.denied({ type: 'transition', transitionId: 'finish' }, 'TRANSITION_NOT_ALLOWED')
-  await task.denied({ type: 'transition', transitionId: 'shortcut' }, 'VALIDATION_REQUIRED')
+  await task.denied({ type: 'transition', transitionId: 'shortcut' }, 'INVALID_INPUT')
   await task.denied(material('code', 'implementation'), 'PLAN_APPROVAL_REQUIRED')
   await task.denied({ type: 'update_progress', progress: 'Done', expected: workflow.nodes[1]!.expected }, 'TRANSITION_NOT_ALLOWED')
   expect(await task.ok({ type: 'update_progress', progress: 'Working' })).toMatchObject({
@@ -58,14 +58,15 @@ it('pauses and resumes planning, approval, execution and validation with their v
   }
 })
 
-it('requires current global validation even on explicit finish and rejects text results in a workflow', async () => {
+it('checks the exact result and eligible actor before scheduling workflow finish', async () => {
   const task = fixture(db)
   const approvalId = await task.review()
   await task.ok({ type: 'approve', approvalId }, 'user')
   const build = await task.ok(material('code', 'current'))
   await task.ok({ type: 'transition', transitionId: 'verify' })
   await task.denied({ type: 'finish', resultText: 'bypass' }, 'INVALID_INPUT')
-  await task.denied({ type: 'finish', resultArtifactId: build.artifacts.find(a => a.key === 'code')!.id }, 'VALIDATION_REQUIRED')
+  await task.denied({ type: 'finish', resultArtifactId: 'another-artifact' }, 'INVALID_INPUT', 'system')
+  await task.denied({ type: 'finish', resultArtifactId: build.artifacts.find(a => a.key === 'code')!.id }, 'TRANSITION_NOT_ALLOWED')
   expect(task.view().validations).toEqual([])
 })
 

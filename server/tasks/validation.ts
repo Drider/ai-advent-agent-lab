@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { threadId } from 'node:worker_threads'
 import type Database from 'better-sqlite3'
 import type { ArtifactRef, JsonValue, TaskActorContext, TaskArtifact, TaskCommandEnvelope, TaskCommandResult, TaskSnapshot, ValidationResult } from '../../shared/task'
 import type { CheckDefinition, WorkflowDefinition } from '../../shared/workflow'
@@ -23,7 +22,7 @@ export interface ValidationRun {
   task: TaskSnapshot
   checks: CheckRun[]
 }
-const active = new Set<string>()
+const leaseDurationMs = 30_000
 
 export function hasReadSource(content: JsonValue, receipts: ToolReceipt[]) {
   return receipts.some(({ name, output }) => {
@@ -43,21 +42,25 @@ function reference({ id, key, type, version, hash }: TaskArtifact): ArtifactRef 
 
 export function createValidationStore(db: Database.Database) {
   const artifacts = createArtifactStore(db)
-  const request = db.prepare<[string], { token: string; pid: number; thread: number }>(`
-    SELECT id AS token, json_extract(details_json, '$.pid') AS pid, json_extract(details_json, '$.thread') AS thread FROM task_events
-    WHERE operation_id = ? AND type = 'validation_requested'
+  const request = db.prepare<[string], { token: string; leaseUntil: number | null }>(`
+    SELECT e.id AS token, json_extract(e.details_json, '$.leaseUntil') AS leaseUntil
+    FROM task_events e JOIN task_commands c ON c.operation_id = e.operation_id
+    WHERE e.operation_id = ? AND e.type = 'validation_requested' AND c.phase = 'running'
   `)
+  const lease = db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', ?)
+    WHERE id = ? AND type = 'validation_requested' AND EXISTS (
+      SELECT 1 FROM task_commands WHERE operation_id = task_events.operation_id AND phase = 'running'
+    )`)
+  function setLease(token: string, until: number) {
+    lease.run(until, token)
+  }
+  function owns(operationId: string, token: string) {
+    return request.get(operationId)?.token === token
+  }
   // Only an identical replay may reclaim an abandoned read-only validation.
   function reclaim(operationId: string) {
     const owner = request.get(operationId)
-    if (!owner) return false
-    if (owner.pid === process.pid) {
-      if (owner.thread !== threadId || active.has(owner.token)) return false
-    } else {
-      try { process.kill(owner.pid, 0); return false } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return false
-      }
-    }
+    if (!owner || (owner.leaseUntil ?? 0) > Date.now()) return false
     db.prepare("DELETE FROM task_commands WHERE operation_id = ? AND phase = 'running'").run(operationId)
     return true
   }
@@ -90,15 +93,14 @@ export function createValidationStore(db: Database.Database) {
     const token = randomUUID()
     db.prepare(`INSERT INTO task_commands (operation_id, session_id, task_id, actor, input_hash, phase, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`).run(operationId, task.sessionId, task.id, actor.role, inputHash, timestamp, timestamp)
-    const details = { pid: process.pid, thread: threadId, nodeVisitId: task.nodeVisitId, checks: checks.map(({ check, inputs }) => ({ id: check.id, inputs })) }
+    const details = { leaseUntil: Date.now() + leaseDurationMs, nodeVisitId: task.nodeVisitId, checks: checks.map(({ check, inputs }) => ({ id: check.id, inputs })) }
     db.prepare(`INSERT INTO task_events (id, session_id, task_id, operation_id, source_turn_id, actor, type, phase,
       revision, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'validation_requested', 'completed', ?, ?, ?)`)
       .run(token, task.sessionId, task.id, operationId, actor.turnId ?? null, actor.role, task.revision, JSON.stringify(details), timestamp)
     return { token, task, checks }
   }
 
-  function verify(run: ValidationRun, operationId: string, current: TaskSnapshot) {
-    if (request.get(operationId)?.token !== run.token) throw new TaskError('OPERATION_CONFLICT', 'Validation reservation changed')
+  function verify(run: ValidationRun, current: TaskSnapshot) {
     if (run.task.nodeVisitId !== current.nodeVisitId || run.task.revision !== current.revision
       || !isDeepStrictEqual(run.task.artifacts, current.artifacts)) {
       throw new TaskError('STALE_TASK_REVISION', 'Validation inputs changed')
@@ -110,7 +112,7 @@ export function createValidationStore(db: Database.Database) {
     for (const row of results) insert.run(row.id, row.taskId, row.checkId, row.checkerVersion, row.nodeVisitId,
       JSON.stringify(row.inputs), row.outcome, JSON.stringify(row.details), row.createdAt)
   }
-  return { reserve, verify, persist, reclaim }
+  return { reserve, verify, persist, reclaim, owns, setLease }
 }
 
 type CommandRuntime = ReturnType<typeof createTaskCommandRuntime>
@@ -137,7 +139,12 @@ export async function executeTaskCommand(runtime: CommandRuntime, taskId: string
   const run = runtime.transaction(taskId, envelope, actor)
   if ('ok' in run) return run
   const { now, readTextFile } = runtime
-  active.add(run.token)
+  const renewal = setInterval(() => {
+    // If SQLite is momentarily unavailable, the next heartbeat can renew.
+    // A replacement reservation always takes precedence over this worker.
+    try { runtime.setValidationLease(run.token, Date.now() + leaseDurationMs) } catch {}
+  }, leaseDurationMs / 3)
+  renewal.unref()
   try {
     const read = readTextFile ?? createValidationFileReader()
     const results = await Promise.all(run.checks.map(async ({ check, artifacts, inputs, toolResults }): Promise<ValidationResult> => ({
@@ -147,7 +154,12 @@ export async function executeTaskCommand(runtime: CommandRuntime, taskId: string
     const final = runtime.transaction(taskId, envelope, actor, { run, results })
     if (!('ok' in final)) throw new Error('Unexpected second validation reservation')
     return final
+  } catch (error) {
+    // Permit immediate replay after a failed final commit. If the database is
+    // unavailable, the lease expires naturally.
+    try { runtime.setValidationLease(run.token, 0) } catch {}
+    throw error
   } finally {
-    active.delete(run.token)
+    clearInterval(renewal)
   }
 }

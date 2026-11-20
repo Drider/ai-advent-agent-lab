@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { stringify } from 'yaml'
 import { evaluateCheck } from '../server/tasks/checks'
 import { runTaskValidation } from '../server/tasks/validation'
@@ -75,6 +75,8 @@ function fileTask() {
   const definition = structuredClone(workflow)
   definition.nodes[0]!.checkIds = ['structure']
   definition.nodes[0]!.writableArtifacts.push('code')
+  definition.transitions.push({ id: 'rework', from: 'draft', to: 'draft', actor: 'agent', event: 'checks_failed',
+    invalidateApprovalKeys: [], guards: [] })
   definition.checks = [check]
   return fixture(db, false, definition)
 }
@@ -88,7 +90,10 @@ it('persists a checker error when the workspace file is missing and replays the 
   expect(result.ok).toBe(true)
   expect(task.view().validations).toMatchObject([{ checkId: 'structure', outcome: 'error', inputs: snapshot.artifacts }])
   expect(await runTaskValidation(db, input)).toEqual(result)
-  await task.denied({ type: 'transition', transitionId: 'shortcut' }, 'VALIDATION_REQUIRED')
+  const completion = await task.service.apply(task.id, { command: { type: 'transition', transitionId: 'shortcut' },
+    expectedRevision: task.view().task!.revision, operationId: 'missing-file-finish' }, input.actor)
+  expect(completion).toMatchObject({ ok: false, error: { code: 'VALIDATION_REQUIRED' } })
+  expect(task.view().validations.map(v => v.outcome)).toEqual(['error', 'error'])
 })
 
 it('reserves inputs before I/O, prevents duplicate execution and rejects stale results atomically', async () => {
@@ -109,6 +114,75 @@ it('reserves inputs before I/O, prevents duplicate execution and rejects stale r
   expect(rejected).toMatchObject({ ok: false, error: { code: 'STALE_TASK_REVISION' } })
   expect(await run()).toEqual(rejected)
   expect(task.view().validations).toEqual([])
+})
+
+it.each(['transition', 'finish'] as const)('runs an earlier node’s global check during %s on the last visit', async kind => {
+  const definition = structuredClone(workflow)
+  definition.nodes[0]!.checkIds = ['global']
+  definition.checks.push({ id: 'global', kind: 'fields', artifactKeys: ['plan'], options: { fields: [] } })
+  definition.completionCheckIds = ['global', 'structure']
+  const task = fixture(db, false, definition)
+  await task.ok(material('plan', 'Plan'))
+  await task.ok({ type: 'validate' })
+  await task.ok({ type: 'transition', transitionId: 'review' })
+  await task.ok({ type: 'approve', approvalId: task.view().approvals[0]!.id }, 'user')
+  const built = await task.ok(material('code', 'result'))
+  const resultArtifactId = built.artifacts.find(row => row.key === 'code')!.id
+  const last = await task.ok({ type: 'transition', transitionId: 'verify' })
+  const command = kind === 'finish' ? { type: kind, resultArtifactId } : { type: kind, transitionId: 'finish' }
+  const done = await task.ok(command, 'system')
+  expect(done.status).toBe('done')
+  expect(task.view().validations.filter(row => row.nodeVisitId === last.nodeVisitId).map(row => [row.checkId, row.outcome]))
+    .toEqual([['global', 'passed'], ['structure', 'passed']])
+})
+
+it('reclaims an expired reservation and fences an old worker while its replacement is running', async () => {
+  const task = fileTask()
+  const snapshot = await task.ok(material('code', { path: 'a', text: 'A' }))
+  const finishReads: Array<(text: string) => void> = []
+  const service = createTaskService(db, { readTextFile: () => new Promise(resolve => finishReads.push(resolve)) })
+  const run = () => service.apply(task.id, { command: { type: 'validate' }, operationId: 'lease', expectedRevision: snapshot.revision },
+    { role: 'agent', sessionId: task.sessionId })
+  const old = run()
+  db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0, '$.thread', -1)
+    WHERE type = 'validation_requested' AND operation_id = 'lease'`).run()
+  const replacement = run()
+  try {
+    expect(finishReads).toHaveLength(2)
+    finishReads[0]!('wrong')
+    expect(await old).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } })
+    expect(task.view().validations).toEqual([])
+    expect(await run()).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } })
+    finishReads[1]!('A')
+    const result = await replacement
+    expect(result.ok).toBe(true)
+    expect(await run()).toEqual(result)
+    expect(task.view().validations).toMatchObject([{ outcome: 'passed' }])
+  } finally {
+    for (const finish of finishReads) finish('A')
+    await Promise.all([old, replacement])
+  }
+})
+
+it('renews a live worker’s lease during a long read', async () => {
+  vi.useFakeTimers()
+  let finish!: (text: string) => void
+  try {
+    const task = fileTask()
+    const snapshot = await task.ok(material('code', { path: 'a', text: 'A' }))
+    const service = createTaskService(db, { readTextFile: () => new Promise(resolve => { finish = resolve }) })
+    const run = () => service.apply(task.id, { command: { type: 'validate' }, operationId: 'long-read', expectedRevision: snapshot.revision },
+      { role: 'agent', sessionId: task.sessionId })
+    const pending = run()
+    const expiry = () => db.prepare<[], { expiry: number }>(`SELECT json_extract(details_json, '$.leaseUntil') AS expiry
+      FROM task_events WHERE operation_id = 'long-read' AND type = 'validation_requested'`).get()!.expiry
+    const initialLease = expiry() - Date.now()
+    await vi.advanceTimersByTimeAsync(initialLease + 1)
+    expect(expiry()).toBeGreaterThan(Date.now())
+    expect(await run()).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } })
+    finish('A')
+    expect((await pending).ok).toBe(true)
+  } finally { vi.useRealTimers() }
 })
 
 it('retries an interrupted final commit without exposing partial evidence', async () => {
@@ -144,17 +218,21 @@ it('binds validation to immutable versions and reruns all completion checks desp
   expect(reads).toBe(1)
   expect(task.view().validations[0]).toMatchObject({ outcome: 'passed', inputs: first.artifacts, nodeVisitId: first.nodeVisitId })
   const changed = await task.ok(material('code', { path: 'report.md', text: 'second' }))
-  await task.denied({ type: 'transition', transitionId: 'shortcut' }, 'VALIDATION_REQUIRED')
+  const tryChanged = await service.apply(task.id, { command: { type: 'transition', transitionId: 'shortcut' },
+    expectedRevision: changed.revision, operationId: 'finish-changed' }, actor)
+  expect(tryChanged).toMatchObject({ ok: false, error: { code: 'VALIDATION_REQUIRED' } })
+  expect(task.view().validations.at(-1)).toMatchObject({ outcome: 'failed', inputs: changed.artifacts })
   file = 'second'
-  await service.apply(task.id, { ...envelope, operationId: 'second', expectedRevision: changed.revision }, actor)
+  await service.apply(task.id, { ...envelope, operationId: 'second', expectedRevision: task.view().task!.revision }, actor)
   file = 'now different'
   clock = '2020-01-01'
   const complete = (id: string) => service.apply(task.id, { command: { type: 'transition', transitionId: 'shortcut' },
     expectedRevision: task.view().task!.revision, operationId: id }, actor)
   expect(await complete('finish')).toMatchObject({ ok: false, error: { code: 'VALIDATION_REQUIRED' } })
-  expect(task.view().validations.map(v => v.outcome)).toEqual(['passed', 'passed', 'failed'])
+  expect(task.view().validations.map(v => v.outcome)).toEqual(['passed', 'failed', 'passed', 'failed'])
   expect(task.view().validations.at(-1)?.createdAt).toBe(clock)
-  file = 'second'
-  expect(await complete('again')).toMatchObject({ ok: false, error: { code: 'VALIDATION_REQUIRED' } })
   expect(task.view().task?.status).toBe('active')
+  await task.ok({ type: 'transition', transitionId: 'rework' })
+  file = 'second'
+  expect(await complete('again')).toMatchObject({ ok: true, task: { status: 'done' } })
 })

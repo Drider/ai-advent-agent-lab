@@ -8,7 +8,7 @@ import { createWorkflowRepository } from '../workflows/repository'
 import { assertJsonValue, canonicalJson, expectedActionSchema } from '../workflows/schema'
 import { createApprovalStore } from './approvals'
 import { createArtifactStore, nonempty } from './artifacts'
-import { completionError, currentArtifact, evaluateTransition, hasApproval } from './workflow'
+import { completionError, currentArtifact, evaluateTransition, hasApproval, type EvaluationPhase } from './workflow'
 import { TaskError } from './errors'
 import { property } from './checks'
 import { createValidationStore, executeTaskCommand, runTaskValidation, hasReadSource, type ValidationRun } from './validation'
@@ -233,7 +233,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     }
   }
 
-  function applyCommand(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string): Mutation {
+  function applyCommand(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string, phase: EvaluationPhase): Mutation {
     const state: TaskState = { ...task, resultArtifactId: task.result?.id ?? null, updatedAt: timestamp }
     const userOnly = command.type === 'pause' || command.type === 'resume' || command.type === 'cancel'
       || command.type === 'complete_basic'
@@ -258,7 +258,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       if (actor.stepNodeVisitId !== undefined && actor.stepNodeVisitId !== task.nodeVisitId) {
         reject('TRANSITION_NOT_ALLOWED', 'Workflow node visit changed')
       }
-      if (command.type !== 'update_progress') return applyWorkflow(task, command, actor, state)
+      if (command.type !== 'update_progress') return applyWorkflow(task, command, actor, state, phase)
       if (command.expected !== undefined) reject('TRANSITION_NOT_ALLOWED', 'Expected action is defined by the pinned workflow')
     }
 
@@ -321,7 +321,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     }
   }
 
-  function applyWorkflow(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, state: TaskState): Mutation {
+  function applyWorkflow(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, state: TaskState, phase: EvaluationPhase): Mutation {
     const definition = workflows.get(task.workflowId!, task.workflowVersion!)!.definition
     const node = definition.nodes.find(item => item.id === task.nodeId)
     if (!node || !task.nodeVisitId) reject('TRANSITION_NOT_ALLOWED', 'Workflow position is invalid')
@@ -387,7 +387,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       if (typeof command.resultArtifactId !== 'string' || command.resultText !== undefined) {
         reject('INVALID_INPUT', 'Workflow finish requires an exact result artifact ID')
       }
-      const code = completionError(task, definition, evidence)
+      const code = completionError(task, definition, evidence, phase)
       if (code) reject(code, 'Current completion evidence is required')
       const result = currentArtifact(task, evidence, definition.resultArtifactKey)!
       if (result.id !== command.resultArtifactId) reject('INVALID_INPUT', 'Current task result is required')
@@ -399,7 +399,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       }
       const edge = definition.transitions.find(edge => edge.from === node.id && edge.event !== 'approve'
         && definition.nodes.some(target => target.id === edge.to && target.kind === 'success')
-        && evaluateTransition(task, definition, edge.id, evidence, actor).allowed)
+        && evaluateTransition(task, definition, edge.id, evidence, actor, phase).allowed)
       if (!edge) reject('TRANSITION_NOT_ALLOWED', 'No permitted transition to success')
       transitionId = edge.id
     } else if (command.type === 'transition') {
@@ -411,7 +411,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       return reject('TRANSITION_NOT_ALLOWED', 'Command is unavailable for this workflow')
     }
 
-    const decision = evaluateTransition(task, definition, transitionId, evidence, actor)
+    const decision = evaluateTransition(task, definition, transitionId, evidence, actor, phase)
     if (!decision.allowed) reject(decision.code, 'Workflow transition requirements were not met')
     const target = definition.nodes.find(item => item.id === decision.targetNodeId)!
     const edge = definition.transitions.find(item => item.id === transitionId)!
@@ -438,7 +438,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
   // A rejected command gets a receipt in the outer transaction. Roll back any tentative evidence writes first.
   const mutate = db.transaction((task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string,
     reserve: boolean) => {
-    const mutation = applyCommand(task, command, actor, timestamp)
+    const mutation = applyCommand(task, command, actor, timestamp, reserve ? 'preflight' : 'commit')
     if (reserve && task.workflowId && (mutation.type === 'validated' || mutation.state.status === 'done')) {
       const definition = workflows.get(task.workflowId, task.workflowVersion!)!.definition
       const node = definition.nodes.find(node => node.id === task.nodeId)!
@@ -472,7 +472,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     }
 
     const task = getOwned(taskId, actor.sessionId)
-    if (completed && (!task || repository.getCommand(operationId)?.receipt_json !== null)) {
+    if (completed && (!task || !validations.owns(operationId, completed.run.token))) {
       return failure(new TaskError('OPERATION_CONFLICT', 'Validation reservation no longer exists'))
     }
     let mutation: Mutation
@@ -488,7 +488,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) reject('INVALID_INPUT', 'Task revision is invalid')
       if (task.revision !== expectedRevision) reject('STALE_TASK_REVISION', 'Task revision changed')
       if (completed) {
-        validations.verify(completed.run, operationId, task)
+        validations.verify(completed.run, task)
         requireActive(task)
         checkRecovery(task.sessionId, task)
         validations.persist(completed.results)
@@ -591,7 +591,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
   })
 
   return { create: create.immediate, transaction: applyTransaction.immediate, view, reserveForTurn: reserveForTurn.immediate,
-    now, readTextFile: options.readTextFile }
+    now, readTextFile: options.readTextFile, setValidationLease: validations.setLease }
 }
 
 export function createTaskService(db: Database.Database, options: TaskServiceOptions = {}) {

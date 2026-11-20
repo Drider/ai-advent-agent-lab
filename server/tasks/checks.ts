@@ -81,6 +81,9 @@ export async function evaluateCheck(check: CheckDefinition, inputs: TaskArtifact
       case 'fields': {
         const { fields } = checkOptions.fields.parse(check.options)
         for (const input of inputs) {
+          if (fields.length && (input.content === null || typeof input.content !== 'object' || Array.isArray(input.content))) {
+            return result(false, { artifactKey: input.key, reason: 'Expected an object' })
+          }
           if (!nonempty(input.content)) return result(false, { artifactKey: input.key, reason: 'Empty artifact' })
           for (const rule of fields) {
             const values = valuesAt(input.content, rule.path.split('.'))
