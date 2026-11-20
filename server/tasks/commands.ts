@@ -13,6 +13,9 @@ import { TaskError } from './errors'
 import { property } from './checks'
 import { createValidationStore, executeTaskCommand, runTaskValidation, hasReadSource, type ValidationRun } from './validation'
 import { createTaskRepository } from './repository'
+import { createTurnRepository } from '../persistence/turn-repository'
+import { assertTaskExecutionAllowed } from './tool-policy'
+import { inspectRecovery, resolveObservation, type RecoveryObservation } from './recovery'
 
 type ArtifactSource = { content: JsonValue; sourceMessageIds: string[]; sourceToolCallIds: string[] }
 
@@ -70,7 +73,7 @@ function requireActive(task: TaskSnapshot): void {
   if (task.status === 'done') reject('TASK_TERMINAL', 'Task is complete')
 }
 
-interface TaskServiceOptions { now?: () => string; newId?: () => string; readTextFile?: (path: string) => Promise<string> }
+interface TaskServiceOptions { now?: () => string; newId?: () => string; readTextFile?: (path: string) => Promise<string>; recoveryRootDir?: string }
 
 export function createTaskCommandRuntime(db: Database.Database, options: TaskServiceOptions = {}) {
   const repository = createTaskRepository(db)
@@ -233,8 +236,19 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     }
   }
 
-  function applyCommand(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string, phase: EvaluationPhase): Mutation {
+  function applyCommand(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string, phase: EvaluationPhase, observation?: RecoveryObservation | TaskError): Mutation {
     const state: TaskState = { ...task, resultArtifactId: task.result?.id ?? null, updatedAt: timestamp }
+    if (command.type === 'resolve_recovery') {
+      if (actor.role !== 'user') reject('TRANSITION_NOT_ALLOWED', 'Recovery requires a user')
+      if (!repository.listRecoveryOperations(task.id).some(row => row.status === 'uncertain')) {
+        reject('TRANSITION_NOT_ALLOWED', 'Task has no uncertain operation')
+      }
+      if (observation instanceof TaskError) throw observation
+      if (!observation || observation.taskId !== task.id || observation.id !== command.operationId
+        || !['failed', 'completed'].includes(command.outcome)) reject('INVALID_INPUT', 'Invalid recovery decision')
+      resolveObservation(db, observation, actor, command.outcome)
+      return { state, type: 'recovery_resolved', details: { operationId: command.operationId, outcome: command.outcome } }
+    }
     const userOnly = command.type === 'pause' || command.type === 'resume' || command.type === 'cancel'
       || command.type === 'complete_basic'
     if (userOnly && actor.role !== 'user') reject('TRANSITION_NOT_ALLOWED', 'Action requires a user')
@@ -437,8 +451,8 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
 
   // A rejected command gets a receipt in the outer transaction. Roll back any tentative evidence writes first.
   const mutate = db.transaction((task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string,
-    reserve: boolean) => {
-    const mutation = applyCommand(task, command, actor, timestamp, reserve ? 'preflight' : 'commit')
+    reserve: boolean, observation?: RecoveryObservation | TaskError) => {
+    const mutation = applyCommand(task, command, actor, timestamp, reserve ? 'preflight' : 'commit', observation)
     if (reserve && task.workflowId && (mutation.type === 'validated' || mutation.state.status === 'done')) {
       const definition = workflows.get(task.workflowId, task.workflowVersion!)!.definition
       const node = definition.nodes.find(node => node.id === task.nodeId)!
@@ -448,7 +462,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
   })
 
   const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext,
-    completed?: { run: ValidationRun; results: ValidationResult[] }): TaskCommandResult | ValidationRun => {
+    completed?: { run: ValidationRun; results: ValidationResult[] }, observation?: RecoveryObservation | TaskError): TaskCommandResult | ValidationRun => {
     const { operationId, expectedRevision, command } = envelope
     if (!operationId.trim()) return failure(new TaskError('INVALID_INPUT', 'Command requires an operation ID'))
     let inputHash: string
@@ -501,7 +515,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
           return deny(operationId, actor, inputHash, new TaskError('VALIDATION_REQUIRED', 'Completion checks did not pass'), updated, task.id)
         }
       }
-      mutation = mutate(task, command, actor, now(), !completed)
+      mutation = mutate(task, command, actor, now(), !completed, observation)
       if (completed) mutation.details = { ...mutation.details, validationIds: completed.results.map(row => row.id) }
     } catch (error) {
       if (error instanceof ChecksRequested && task?.workflowId) {
@@ -512,6 +526,12 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       return deny(operationId, actor, inputHash, error, task, task?.id ?? null)
     }
 
+    if (command.type === 'pause' || command.type === 'cancel') {
+      const turns = createTurnRepository(db)
+      const running = db.prepare<[string, string], { id: string }>("SELECT id FROM turns WHERE task_id = ? AND session_id = ? AND status = 'running'")
+        .all(task.id, task.sessionId)
+      for (const { id } of running) turns.markStopped(id)
+    }
     repository.update(task.id, expectedRevision, mutation.state)
     return accept(operationId, actor, inputHash, repository.get(task.id)!, mutation.type, mutation.details, mutation.resumeRequestId)
   })
@@ -537,6 +557,9 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
         }
       }
       if (!task.workflowId && !blocked) actions.push({ type: 'complete_basic', label: 'Завершить задачу' })
+    }
+    for (const operation of recoveryOperations) {
+      if (operation.status === 'uncertain') actions.push({ type: 'resolve_recovery', label: 'Проверить результат', recoveryOperationId: operation.id })
     }
     return { task, actions, approvals: requests, validations, recoveryOperations }
   }
@@ -596,12 +619,51 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
 
 export function createTaskService(db: Database.Database, options: TaskServiceOptions = {}) {
   const runtime = createTaskCommandRuntime(db, options)
-  function apply(taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext) {
+  const turns = createTurnRepository(db)
+  async function apply(taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext, call?: { toolCallId: string }) {
+    if (call) {
+      const toolNames = { update_progress: 'update_task_progress', submit_artifact: 'submit_task_artifact',
+        transition: 'request_task_transition', validate: 'run_task_checks', finish: 'finish_task' } as const
+      const type = envelope.command.type
+      if (!Object.hasOwn(toolNames, type)) throw new TaskError('TRANSITION_NOT_ALLOWED', 'Command is unavailable to tools')
+      const toolName = toolNames[type as keyof typeof toolNames]
+      const transaction = db.transaction((...args: Parameters<typeof runtime.transaction>) => {
+        const finalizingValidation = args[3] !== undefined
+        if (!finalizingValidation) {
+          assertTaskExecutionAllowed(db, taskId, actor, true)
+          if (!turns.recordToolStart({ turnId: actor.turnId!, toolCallId: call.toolCallId,
+            name: toolName, input: envelope, stepIndex: actor.stepIndex ?? 0, taskId })) {
+            throw new TaskError('OPERATION_CONFLICT', 'Tool call already exists')
+          }
+        }
+        const result = runtime.transaction(...args)
+        if ('ok' in result) turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, output: result })
+        return result
+      })
+      return executeTaskCommand({ ...runtime, transaction: transaction.immediate }, taskId, envelope, actor)
+    }
+    if (envelope.command.type === 'resolve_recovery') {
+      let observation: RecoveryObservation | TaskError | undefined
+      // Replaying a settled decision returns its saved command receipt without touching the file.
+      if (!createTaskRepository(db).getCommand(envelope.operationId)) {
+        try {
+          observation = await inspectRecovery(db, envelope.command.operationId, actor, options.recoveryRootDir, taskId)
+        } catch (error) {
+          if (!(error instanceof TaskError)) throw error
+          observation = error
+        }
+      }
+      const result = runtime.transaction(taskId, envelope, actor, undefined, observation)
+      if (!('ok' in result)) throw new Error('Unexpected validation during recovery')
+      return result
+    }
     if (envelope.command.type === 'validate') {
       return runTaskValidation(db, { taskId, actor, checkIds: envelope.command.checkIds,
         operationId: envelope.operationId, expectedRevision: envelope.expectedRevision }, runtime)
     }
-    return executeTaskCommand(runtime, taskId, envelope, actor)
+    const result = await executeTaskCommand(runtime, taskId, envelope, actor)
+    if (result.ok && (envelope.command.type === 'pause' || envelope.command.type === 'cancel')) turns.abortStoppedStreams(actor.sessionId)
+    return result
   }
   return { create: runtime.create, view: runtime.view, reserveForTurn: runtime.reserveForTurn, apply }
 }

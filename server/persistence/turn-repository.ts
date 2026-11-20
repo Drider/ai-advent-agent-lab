@@ -65,6 +65,8 @@ function toPublicTurn(row: TurnRow): SessionTurnSummary {
   }
 }
 
+const activeStreams = new WeakMap<Database.Database, Map<string, AbortController>>()
+
 export function createTurnRepository(db: Database.Database) {
   const transaction = <T>(callback: () => T): T => {
     const run = db.transaction(callback)
@@ -229,9 +231,9 @@ export function createTurnRepository(db: Database.Database) {
     }
     const uncertain = db.prepare(`
       SELECT 1
-      FROM tool_executions
-      WHERE turn_id = ?
-        AND (status = 'running' OR (status = 'failed' AND tool_name IN ('rollDie', 'write_file')))
+      FROM tool_executions e LEFT JOIN task_tool_operations o ON o.id = e.task_operation_id
+      WHERE e.turn_id = ? AND (o.status IN ('running', 'uncertain') OR (o.id IS NULL
+        AND (e.status = 'running' OR (e.status = 'failed' AND e.tool_name IN ('rollDie', 'write_file')))))
       LIMIT 1
     `).get(sourceTurnId)
     return uncertain ? 'needs_review' : 'safe'
@@ -280,6 +282,8 @@ export function createTurnRepository(db: Database.Database) {
     toolCallId: string
     stepIndex: number
     name: string
+    taskId?: string
+    taskOperationId?: string
     input: unknown
   }): boolean {
     return transaction(() => {
@@ -295,9 +299,9 @@ export function createTurnRepository(db: Database.Database) {
       const timestamp = now()
       db.prepare(`
         INSERT INTO tool_executions
-          (id, turn_id, step_index, tool_call_id, tool_name, status, input_json, output_json, error_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'running', ?, NULL, NULL, ?, ?)
-      `).run(randomUUID(), input.turnId, input.stepIndex, input.toolCallId, input.name, JSON.stringify(input.input), timestamp, timestamp)
+          (id, turn_id, step_index, tool_call_id, tool_name, status, input_json, output_json, error_json, created_at, updated_at, task_id, task_operation_id)
+        VALUES (?, ?, ?, ?, ?, 'running', ?, NULL, NULL, ?, ?, ?, ?)
+      `).run(randomUUID(), input.turnId, input.stepIndex, input.toolCallId, input.name, JSON.stringify(input.input), timestamp, timestamp, input.taskId ?? null, input.taskOperationId ?? null)
       return true
     })
   }
@@ -359,6 +363,7 @@ export function createTurnRepository(db: Database.Database) {
         WHERE id = ?
       `).run(input.status, timestamp, turn.session_id)
     })
+    activeStreams.get(db)?.delete(input.turnId)
   }
 
   function getLastTurn(sessionId: string): SessionTurnSummary | null {
@@ -399,6 +404,7 @@ export function createTurnRepository(db: Database.Database) {
         .run(stopReason, timestamp, timestamp, turnId)
       touchSession(turn.session_id, 'failed', timestamp)
     })
+    activeStreams.get(db)?.delete(turnId)
   }
 
   function recoverRunningTurns(): number {
@@ -424,6 +430,23 @@ export function createTurnRepository(db: Database.Database) {
     beginUserTurn,
     beginContinuation,
     assessContinuation,
+    attachStream(turnId: string, controller: AbortController) {
+      const streams = activeStreams.get(db) ?? new Map<string, AbortController>()
+      activeStreams.set(db, streams)
+      if (getTurnRow(turnId).status === 'running') streams.set(turnId, controller)
+      else controller.abort()
+    },
+    abortStoppedStreams(sessionId: string) {
+      const streams = activeStreams.get(db)
+      if (!streams?.size) return
+      const stopped = db.prepare<[string, string]>("SELECT 1 FROM turns WHERE session_id = ? AND id = ? AND status = 'stopped'")
+      for (const [id, controller] of streams) {
+        if (stopped.get(sessionId, id)) {
+          streams.delete(id)
+          controller.abort()
+        }
+      }
+    },
     saveAssistantSnapshot,
     recordToolStart,
     recordToolEnd,

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { JsonValue, TaskArtifact, ValidationResult } from '../../shared/task'
 import type { CheckDefinition } from '../../shared/workflow'
+import { workingTool } from './tool-registry'
 import { nonempty } from './artifacts'
 
 const path = z.string().max(200).regex(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/)
@@ -53,17 +54,14 @@ function matchesField(value: JsonValue | undefined, rule: z.infer<typeof field>)
 }
 export function successfulOutput(name: string, output: JsonValue): boolean {
   if (property(output, 'error') !== undefined) return false
-  const ok = property(output, 'ok')
-  if (ok !== undefined) return ok === true
-  switch (name) {
-    case 'save_model_configuration': case 'save_memory': return property(output, 'saved') === true
-    case 'delete_model_configuration': return property(output, 'deleted') === true
-    case 'create_user_profile': return property(output, 'created') === true
-    case 'update_user_profile': return property(output, 'updated') === true
-    case 'select_user_profile': return property(output, 'selected') === true
-    case 'rollDie': return typeof property(output, 'result') === 'number'
-    case 'listSavedRolls': return Array.isArray(output)
-    default: return false
+  const success = workingTool(name)?.success
+  switch (success) {
+    case undefined: return false
+    case 'array': return Array.isArray(output)
+    case 'roll': return typeof property(output, 'result') === 'number'
+    case 'sessions': return Array.isArray(property(output, 'sessions'))
+    case 'analysis': return property(output, 'totals') !== undefined
+    default: return property(output, success) === true
   }
 }
 

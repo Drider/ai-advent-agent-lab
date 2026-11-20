@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { sqliteExecute } from '../sqlite-execute'
 import { tool } from 'ai'
 import { z } from 'zod'
 import { createUserProfileRepository, UserProfileError } from '../../persistence/user-profile-repository'
@@ -72,7 +73,7 @@ export function createUserProfileTools(options: {
     create_user_profile: tool({
       description: 'Create a profile only when the user explicitly asks to create one. Supply the exact name and full instruction text requested. Creating it does not change any chat assignment or the default profile.',
       inputSchema: createSchema,
-      execute: async (input) => {
+      execute: sqliteExecute((input) => {
         const profiles = repository()
         if (!profiles) return { created: false as const, error: unavailable }
         try {
@@ -81,12 +82,12 @@ export function createUserProfileTools(options: {
         } catch (error) {
           return { created: false as const, error: errorResult(error) }
         }
-      },
+      }),
     }),
     update_user_profile: tool({
       description: 'Update only the supplied fields of a profile after the user explicitly requests an edit. Before a semantic edit, read the complete profile; preserve every instruction the user did not ask to change. Use the current revision from that read.',
       inputSchema: updateSchema,
-      execute: async ({ id, ...patch }) => {
+      execute: sqliteExecute(({ id, ...patch }: z.infer<typeof updateSchema>) => {
         const profiles = repository()
         if (!profiles) return { updated: false as const, error: unavailable }
         try {
@@ -95,12 +96,12 @@ export function createUserProfileTools(options: {
         } catch (error) {
           return { updated: false as const, error: errorResult(error) }
         }
-      },
+      }),
     }),
     select_user_profile: tool({
       description: 'Assign an existing profile to this chat only after the user explicitly asks to switch it. Never accept a session or turn ID from model input. The current turn keeps its original profile; the selection applies from the next turn.',
       inputSchema: z.object({ id: idSchema }).strict(),
-      execute: async ({ id }) => {
+      execute: sqliteExecute(({ id }) => {
         const profiles = repository()
         if (!profiles || !options.sessionId || !options.turnId) return { selected: false as const, error: unavailable }
         try {
@@ -109,7 +110,7 @@ export function createUserProfileTools(options: {
         } catch (error) {
           return { selected: false as const, error: errorResult(error) }
         }
-      },
+      }),
     }),
   }
 }

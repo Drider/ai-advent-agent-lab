@@ -1,3 +1,4 @@
+import { workingTool } from './tool-registry'
 import type Database from 'better-sqlite3'
 import type { ArtifactRef, JsonValue, TaskActorContext, TaskArtifact, TaskCommandResult, TaskSnapshot, TaskView, ValidationResult } from '../../shared/task'
 
@@ -233,11 +234,13 @@ export function createTaskRepository(db: Database.Database) {
   }
 
   function hasUnresolvedOperations(sessionId: string): boolean {
-    return db.prepare(`
-      SELECT 1 FROM task_tool_operations operation JOIN tasks task ON task.id = operation.task_id
+    const pending = db.prepare<[string], { status: string; tool: string; turnStatus: string | null }>(`
+      SELECT operation.status, operation.tool_name AS tool, turn.status AS turnStatus
+      FROM task_tool_operations operation JOIN tasks task ON task.id = operation.task_id
+      LEFT JOIN turns turn ON turn.id = operation.source_turn_id
       WHERE task.session_id = ? AND operation.status IN ('running', 'uncertain')
-      LIMIT 1
-    `).get(sessionId) !== undefined
+    `).all(sessionId)
+    return pending.some(row => row.status === 'uncertain' || row.turnStatus !== 'running' || workingTool(row.tool)?.mutating !== false)
   }
 
   function getTurn(id: string, sessionId: string) {

@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto'
+import { sqliteExecute } from '../sqlite-execute'
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { DiceRollRepository } from '../../persistence/dice-roll-repository'
@@ -37,19 +38,18 @@ export function createDiceTool(
     inputSchema: z.object({
       sides: z.number().int().min(MIN_DIE_SIDES).max(MAX_DIE_SIDES).default(DEFAULT_DIE_SIDES),
     }),
-    execute: async ({ sides }, executionOptions) => {
-      if (options.repository) {
-        return options.repository.rollOnce({
+    execute: options.repository
+      ? sqliteExecute(({ sides }: { sides: number }, executionOptions: { toolCallId: string }) => options.repository!.rollOnce({
           toolCallId: executionOptions.toolCallId,
           sides,
           draw,
           at: options.now?.() ?? new Date(),
-        })
-      }
-      const roll = rollDie(sides, draw)
-      await appendDiceRoll(roll.result, options.now?.() ?? new Date(), options.filePath)
-      return roll
-    },
+        }))
+      : async ({ sides }) => {
+          const roll = rollDie(sides, draw)
+          await appendDiceRoll(roll.result, options.now?.() ?? new Date(), options.filePath)
+          return roll
+        },
   })
 }
 

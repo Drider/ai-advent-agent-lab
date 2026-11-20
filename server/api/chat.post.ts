@@ -108,6 +108,10 @@ export default defineEventHandler(async (event) => {
     throw error
   }
 
+  const stopController = new AbortController()
+  const requestSignal = event.web?.request?.signal
+  const abortSignal = requestSignal ? AbortSignal.any([requestSignal, stopController.signal]) : stopController.signal
+  turns.attachStream(turnId, stopController)
   let preparedContext
   let promptOverheadTokens = 2_000
   try {
@@ -126,7 +130,7 @@ export default defineEventHandler(async (event) => {
       memorySnapshot,
       pricing: request.pricing,
       promptOverheadTokens,
-      abortSignal: event.web?.request?.signal,
+      abortSignal,
     })
   } catch (error) {
     turns.markFailed(turnId, classifyAgentStopReason(error))
@@ -158,7 +162,6 @@ export default defineEventHandler(async (event) => {
   // Read the log id after the turn is reserved. A concurrent history clear
   // cannot rotate it while the running turn blocks that operation.
   const runId = (db.prepare('SELECT run_log_id FROM sessions WHERE id = ?').get(request.sessionId) as { run_log_id: string }).run_log_id
-  const abortSignal = event.web?.request?.signal
 
   try {
     return await streamChatAgent({

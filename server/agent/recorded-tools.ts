@@ -1,4 +1,11 @@
 import type { Tool, ToolExecutionOptions } from 'ai'
+import type Database from 'better-sqlite3'
+import { z } from 'zod'
+import type { JsonValue, TaskActorContext } from '../../shared/task'
+import { TaskError } from '../tasks/errors'
+import { sha256 } from '../tasks/tool-operation-store'
+import { actionKeyPattern, createTaskToolOperations } from '../tasks/tool-operations'
+import { workingTool } from '../tasks/tool-registry'
 
 export interface RecordedToolRepository {
   recordToolStart(input: {
@@ -23,6 +30,7 @@ export function recordToolExecution<TInput, TOutput, TContext = unknown>(
     getStepIndex: () => number
     repository: RecordedToolRepository
     toolName?: string
+    task?: { db: Database.Database; taskId: string; getActor: () => TaskActorContext }
   },
 ): Tool<TInput, TOutput, TContext> {
   if (!originalTool.execute) {
@@ -31,6 +39,59 @@ export function recordToolExecution<TInput, TOutput, TContext = unknown>(
 
   const execute = originalTool.execute
   const toolName = options.toolName ?? originalTool.title ?? 'tool'
+
+  if (options.task) {
+    const { db, taskId, getActor } = options.task
+    const operations = createTaskToolOperations(db)
+    const mutating = workingTool(toolName)?.mutating
+    const schema = originalTool.inputSchema
+    if (mutating && !(schema instanceof z.ZodObject)) throw new Error('Mutating task tool requires an object schema')
+    const inputSchema = mutating && schema instanceof z.ZodObject
+      ? schema.safeExtend({ actionKey: z.string().regex(actionKeyPattern).describe('Stable ID for this logical action. Reuse for a retry.') })
+      : schema
+    return {
+      ...originalTool,
+      inputSchema,
+      execute: async (raw: TInput, executionOptions: ToolExecutionOptions<TContext>) => {
+        const actor = getActor()
+        const { toolCallId } = executionOptions
+        const { actionKey, ...args } = (raw ?? {}) as Record<string, unknown>
+        if (mutating && (typeof actionKey !== 'string' || !actionKeyPattern.test(actionKey))) {
+          throw new TaskError('INVALID_INPUT', 'A stable ASCII actionKey (1–80 characters) is required')
+        }
+        const reserve = () => operations.reserve({
+          taskId, toolName, actor, turnId: options.turnId, nodeVisitId: actor.stepNodeVisitId ?? null, toolCallId,
+          actionKey: mutating ? actionKey as string : '/read/' + sha256(JSON.stringify([options.turnId, toolCallId])),
+          input: args as JsonValue,
+        })
+        const sqlite = (execute as typeof execute & { sqlite?: (args: TInput, options: ToolExecutionOptions<TContext>) => TOutput }).sqlite
+        if (sqlite) {
+          return db.transaction(() => {
+            const decision = reserve()
+            if (decision.kind === 'replay') return decision.output
+            const result = sqlite(args as TInput, toolName === 'rollDie' ? { ...executionOptions, toolCallId: decision.id } : executionOptions)
+            const output: JsonValue = JSON.parse(JSON.stringify(result))
+            operations.complete(decision.id, output)
+            return output
+          }).immediate()
+        }
+        const decision = reserve()
+        if (decision.kind === 'replay') return decision.output
+        try {
+          // No await between committing authorization and starting the effect.
+          const result = await execute(args as TInput, executionOptions)
+          const output: JsonValue = JSON.parse(JSON.stringify(result))
+          operations.complete(decision.id, output)
+          return output
+        } catch (error) {
+          // A failed final commit rolls back both receipts. If the database is
+          // unavailable, the original intent remains available to restart recovery.
+          try { operations.fail(decision.id, error) } catch {}
+          throw error
+        }
+      },
+    } as Tool<TInput, TOutput, TContext>
+  }
 
   return {
     ...originalTool,

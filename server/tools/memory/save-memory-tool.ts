@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { sqliteExecute } from '../sqlite-execute'
 import { tool } from 'ai'
 import { z } from 'zod'
 import { createLongTermMemoryRepository } from '../../memory/long-term-repository'
@@ -25,7 +26,7 @@ export function createSaveMemoryTool(options: {
   return tool({
     description: 'Save a memory record only when the user explicitly asks you to remember, save, or store information. A request to save to project memory ("сохрани в память проекта") means working/current_project, even for knowledge or decisions: use category=note for these. Use long_term only when the user explicitly requests long-term, global, or cross-project memory. Global scope requires an explicit global or cross-project request. The requested layer takes priority over the content type. Project scope always means the current chat project.',
     inputSchema: memoryInputSchema,
-    execute: async ({ layer, category, scope, key, value }) => {
+    execute: sqliteExecute(({ layer, category, scope, key, value }) => {
       if (!options.db || !options.sessionId) {
         return { saved: false, error: 'Memory saving is not configured for this chat.' }
       }
@@ -83,6 +84,6 @@ export function createSaveMemoryTool(options: {
         value: fact.value,
         id: fact.id,
       }
-    },
+    }),
   })
 }

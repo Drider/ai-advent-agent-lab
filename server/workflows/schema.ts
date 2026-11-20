@@ -4,10 +4,7 @@ import { checkOptions } from '../tasks/checks'
 import type { JsonValue } from '../../shared/task'
 import type { WorkflowDefinition } from '../../shared/workflow'
 import { WorkflowSchemaError, type WorkflowSchemaIssue } from '../tasks/errors'
-import type { FileTools } from '../tools/files'
-import type { ModelConfigurationTools } from '../tools/model-configurations'
-import type { SessionTools } from '../tools/sessions'
-import type { UserProfileTools } from '../tools/user-profiles'
+import { workingTool } from '../tasks/tool-registry'
 
 const MAX_WORKFLOW_BYTES = 65_536
 export const MAX_WORKFLOW_DEPTH = 20
@@ -17,33 +14,6 @@ const id = z.string().regex(/^[a-z][a-z0-9_]{0,79}$/)
 const ids = z.array(id)
 const label = z.string().min(1).max(200)
 const actor = z.enum(['agent', 'user', 'system'])
-
-type WorkingToolName = 'rollDie' | 'listSavedRolls' | 'save_memory'
-  | keyof (FileTools & ModelConfigurationTools & SessionTools & UserProfileTools)
-
-const workingTools = new Set(Object.keys({
-  rollDie: true,
-  listSavedRolls: true,
-  save_memory: true,
-  find_files: true,
-  read_file: true,
-  read_pdf: true,
-  search_text: true,
-  text_stats: true,
-  write_file: true,
-  get_current_session: true,
-  list_sessions: true,
-  read_session_file: true,
-  analyze_sessions: true,
-  save_model_configuration: true,
-  list_model_configurations: true,
-  delete_model_configuration: true,
-  list_user_profiles: true,
-  get_user_profile: true,
-  create_user_profile: true,
-  update_user_profile: true,
-  select_user_profile: true,
-} satisfies Record<WorkingToolName, true>))
 
 export const expectedActionSchema = z.strictObject({
   actor,
@@ -63,7 +33,7 @@ const nodeSchema = z.strictObject({
   stage: label,
   label,
   expected: expectedActionSchema,
-  allowedTools: z.array(z.string().refine(tool => workingTools.has(tool), 'Unknown working tool')),
+  allowedTools: z.array(z.string().refine(tool => !!workingTool(tool), 'Unknown working tool')),
   writableArtifacts: ids,
   requiredApprovalKeys: ids,
   checkIds: ids,
@@ -232,7 +202,7 @@ function graphIssues(definition: WorkflowDefinition): WorkflowSchemaIssue[] {
         if (issue.code === 'unrecognized_keys') issue.keys.forEach(key => add([...at, key], 'Unknown option'))
         else add(at, issue.message)
       }
-    } else if ('toolName' in options.data && !workingTools.has(options.data.toolName)) {
+    } else if ('toolName' in options.data && !workingTool(options.data.toolName)) {
       add([...path, 'options', 'toolName'], 'Unknown working tool')
     } else if ('datasetKey' in options.data && (check.artifactKeys.length !== 2
       || options.data.datasetKey === options.data.reportKey

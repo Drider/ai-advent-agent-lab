@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { sqliteExecute } from '../sqlite-execute'
 import { tool } from 'ai'
 import { z } from 'zod'
 import { validateModelConfigurationSaveRequest, type ModelConfigurationInput } from '../../../shared/model-config'
@@ -37,7 +38,7 @@ export function createModelConfigurationTools(options: { db?: Database.Database 
     save_model_configuration: tool({
       description: 'Save the exact model configuration explicitly requested by the user. Include a name, modelId, optional contextWindowTokens, contextStrategy, costSettings, and detailedStatistics. Saving an existing name updates that saved configuration; report whether it was updated.',
       inputSchema: saveRequestSchema,
-      execute: async (request) => {
+      execute: sqliteExecute((request) => {
         if (!options.db) return { saved: false as const, error: unavailable }
         let configuration: ModelConfigurationInput
         try {
@@ -47,7 +48,7 @@ export function createModelConfigurationTools(options: { db?: Database.Database 
         }
         const result = createModelConfigurationRepository(options.db).saveWithResult(configuration)
         return { saved: true as const, ...result }
-      },
+      }),
     }),
     list_model_configurations: tool({
       description: 'List all saved model configurations with their exact settings. Use this when the user asks to see, inspect, or choose a saved configuration, and before deleting one.',
@@ -63,17 +64,18 @@ export function createModelConfigurationTools(options: { db?: Database.Database 
     delete_model_configuration: tool({
       description: 'Delete a saved model configuration by ID returned by list_model_configurations during this turn. Never delete a profile before listing it and confirming the requested target matches.',
       inputSchema: z.object({ id: z.string().uuid() }).strict(),
-      execute: async ({ id }) => {
+      execute: sqliteExecute(({ id }) => {
         if (!options.db) return { deleted: false as const, error: unavailable }
         if (!listedIds.has(id)) {
           return { deleted: false as const, error: { code: 'NOT_LISTED', message: 'List saved model configurations before deleting one.' } }
         }
         const deleted = createModelConfigurationRepository(options.db).delete(id)
-        listedIds.delete(id)
+        // A failed outer receipt transaction restores the row. Keep its list permission available for that retry.
+        if (!options.db.inTransaction) listedIds.delete(id)
         return deleted
           ? { deleted: true as const, id }
           : { deleted: false as const, error: { code: 'NOT_FOUND', message: 'Model configuration not found.' } }
-      },
+      }),
     }),
   }
 }

@@ -1,3 +1,4 @@
+import { constants } from 'node:fs'
 import { mkdir, open, readdir, lstat, writeFile as writeFileFs } from 'node:fs/promises'
 import { isAbsolute, join, matchesGlob, relative, resolve, sep } from 'node:path'
 import {
@@ -113,7 +114,7 @@ function validatePattern(pattern: string): ToolResult<void> {
   return success(undefined)
 }
 
-async function readTextFile(rootDir: string, relativePath: string, maxBytes: number, preserveBOM: boolean): Promise<ToolResult<string>> {
+async function readBytes(rootDir: string, relativePath: string, maxBytes: number): Promise<ToolResult<Buffer>> {
   const pathCheck = await rejectSymlinkComponents(rootDir, relativePath, false)
   if (!pathCheck.ok) {
     return pathCheck
@@ -122,14 +123,20 @@ async function readTextFile(rootDir: string, relativePath: string, maxBytes: num
   const absolutePath = join(rootDir, ...relativePath.split('/'))
   let fileHandle
   try {
-    fileHandle = await open(absolutePath, 'r')
+    fileHandle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const buffer = Buffer.alloc(maxBytes + 1)
-    const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, 0)
-    const content = buffer.subarray(0, bytesRead)
+    if (!(await fileHandle.stat()).isFile()) return failure('NOT_A_FILE', 'path is not a regular file')
+    let size = 0
+    while (size < buffer.length) {
+      const { bytesRead } = await fileHandle.read(buffer, size, buffer.length - size, size)
+      if (!bytesRead) break
+      size += bytesRead
+    }
+    const content = buffer.subarray(0, size)
     if (isTooLarge(content, maxBytes)) {
       return failure('TOO_LARGE', `file exceeds ${maxBytes} UTF-8 bytes`)
     }
-    return decodeText(content, preserveBOM)
+    return success(content)
   } catch (error) {
     if (isMissing(error)) {
       return failure('NOT_FOUND', 'file was not found')
@@ -215,7 +222,7 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
     })
   }
 
-  async function readFile(path: string, options: { preserveBOM?: boolean } = {}): Promise<ToolResult<ReadFileData>> {
+  async function readFileBytes(path: string): Promise<ToolResult<{ path: string; bytes: Buffer }>> {
     if (typeof path !== 'string' || !validateRelativePath(path, MAX_PATH_LENGTH)) {
       return invalidPath(typeof path === 'string' ? path : '')
     }
@@ -226,8 +233,15 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
       return invalidPath(path)
     }
 
-    const result = await readTextFile(absoluteRoot, relativePath, maxReadBytes, options.preserveBOM === true)
-    return result.ok ? success({ path: relativePath, text: result.data }) : result
+    const result = await readBytes(absoluteRoot, relativePath, maxReadBytes)
+    return result.ok ? success({ path: relativePath, bytes: result.data }) : result
+  }
+
+  async function readFile(path: string, options: { preserveBOM?: boolean } = {}): Promise<ToolResult<ReadFileData>> {
+    const file = await readFileBytes(path)
+    if (!file.ok) return file
+    const text = decodeText(file.data.bytes, options.preserveBOM === true)
+    return text.ok ? success({ path: file.data.path, text: text.data }) : text
   }
 
   async function readPdf(path: string, page = 1, offset = 0): Promise<ToolResult<ReadPdfData>> {
@@ -342,6 +356,7 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
 
   return {
     findFiles,
+    readFileBytes,
     readFile,
     readPdf,
     writeFile,
