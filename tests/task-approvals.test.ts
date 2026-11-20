@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
+import { createSessionRepository } from '../server/persistence/session-repository'
 import { openChatDatabase } from '../server/persistence/db'
 import { fixture, material, workflow } from './task-workflow-fixture'
 
@@ -55,4 +56,17 @@ it('keeps the request pending when a guard on its approval transition denies ent
   const approvalId = await task.review()
   await task.denied({ type: 'approve', approvalId }, 'TRANSITION_NOT_ALLOWED', 'user')
   expect(task.view().approvals).toMatchObject([{ id: approvalId, status: 'pending' }])
+})
+
+it('rejects creation at an approval entry with no current artifact for the request', () => {
+  const definition = structuredClone(workflow)
+  definition.entryNodeId = 'review'
+  definition.nodes.find(node => node.id === 'review')!.writableArtifacts = []
+  const { service, published } = fixture(db, true, definition)
+  const { id: sessionId } = createSessionRepository(db).createSession()
+  const command = { sessionId, task: 'New task', operationId: 'create-at-review', workflow: { id: published.workflowId, version: 1 } }
+  const rejected = service.create(command, { sessionId, role: 'user' })
+  expect(rejected).toMatchObject({ ok: false, error: { code: 'TRANSITION_NOT_ALLOWED' }, task: null })
+  expect(service.create(command, { sessionId, role: 'user' })).toEqual(rejected)
+  expect(db.prepare('SELECT id FROM tasks WHERE session_id = ?').all(sessionId)).toEqual([])
 })

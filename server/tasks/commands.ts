@@ -122,6 +122,8 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     if (!pinned) reject('NOT_FOUND', 'Workflow version was not found')
     const entry = pinned.definition.nodes.find(node => node.id === pinned.definition.entryNodeId)
     if (!entry) throw new Error('Published workflow is missing its entry node')
+    // New activations have no workflow material from which to create an approval request.
+    if (entry.kind === 'approval') reject('TRANSITION_NOT_ALLOWED', 'Approval entry requires current workflow material')
     return { workflowId: id, workflowVersion: version, ...position(entry) }
   }
 
@@ -212,7 +214,8 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
   function checkArtifactSources(task: TaskSnapshot, command: Extract<TaskCommand, { type: 'submit_artifact' }>) {
     if (!artifactKey.test(command.key) || !Array.isArray(command.sourceMessageIds) || !Array.isArray(command.sourceToolCallIds)
       || !command.sourceMessageIds.every(id => typeof id === 'string') || !command.sourceToolCallIds.every(id => typeof id === 'string')
-      || !repository.hasArtifactSources(task, command.sourceMessageIds, command.sourceToolCallIds)) {
+      || !repository.hasArtifactSources(task, command.sourceMessageIds, command.sourceToolCallIds)
+      || (task.workflowId && !artifacts.afterActivation(task.id, command.sourceToolCallIds))) {
       reject('INVALID_INPUT', 'Artifact key or sources are invalid')
     }
   }
@@ -232,7 +235,8 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       if (actor.role !== 'user' || task.workflowId) reject('TRANSITION_NOT_ALLOWED', 'Only a user can attach a workflow to a basic task')
       checkTurnStart(task.sessionId, task)
       return { state: { ...state, ...pinWorkflow(command.workflowId, command.version) }, type: 'workflow_attached',
-        details: { priorArtifactIds: task.artifacts.map(item => item.id) } }
+        details: { priorArtifactIds: task.artifacts.map(item => item.id),
+          priorTurnPosition: repository.lastTurnPosition(task.sessionId) } }
     }
 
     if (task.workflowId && !userOnly) {

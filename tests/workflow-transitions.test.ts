@@ -97,3 +97,13 @@ it('checks exact task, visit, checker, inputs and latest outcome before entering
   expect(evaluateTransition(task, workflow, 'shortcut', { artifacts: [artifact], approvals: [], validations: [validation] }, actor))
     .toEqual({ allowed: true, targetNodeId: 'done' })
 })
+
+it('rejects attachment at an approval entry even when a basic artifact shares its requested key', async () => {
+  const definition = structuredClone(workflow)
+  definition.entryNodeId = 'review'
+  definition.nodes.find(node => node.id === 'review')!.writableArtifacts = []
+  const task = fixture(db, true, definition)
+  await task.ok(material('plan', 'Before activation'))
+  await task.denied({ type: 'attach', workflowId: task.published.workflowId, version: 1 }, 'TRANSITION_NOT_ALLOWED', 'user')
+  expect(task.view().approvals).toEqual([])
+})

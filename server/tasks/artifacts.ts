@@ -39,13 +39,28 @@ export function createArtifactStore(db: Database.Database) {
         WHERE e.task_id = a.task_id AND e.type = 'workflow_attached' AND prior.value = a.id
       ) ORDER BY key`)
 
+  const priorCall = db.prepare<[string, string]>(`SELECT 1 FROM task_events attached
+    JOIN turns turn ON turn.session_id = attached.session_id AND turn.task_id = attached.task_id
+    JOIN tool_executions execution ON execution.turn_id = turn.id
+    WHERE attached.task_id = ? AND attached.type = 'workflow_attached' AND execution.tool_call_id = ?
+      AND CASE WHEN json_type(attached.details_json, '$.priorTurnPosition') IS NULL
+        THEN turn.started_at <= attached.created_at
+        ELSE turn.position <= json_extract(attached.details_json, '$.priorTurnPosition') END
+    LIMIT 1`)
+
+  function afterActivation(taskId: string, toolCallIds: string[]): boolean {
+    // An ID shared with a prior turn is ambiguous as a workflow source.
+    return toolCallIds.every(id => priorCall.get(taskId, id) === undefined)
+  }
+
   return {
+    afterActivation,
     latest(taskId: string, key: string): TaskArtifact | null {
       const row = byKey.get(taskId, key)
       return row ? artifact(row) : null
     },
     workflowArtifacts(taskId: string): TaskArtifact[] {
-      return current.all(taskId).map(artifact)
+      return current.all(taskId).map(artifact).filter(item => afterActivation(taskId, item.sourceToolCallIds))
     },
   }
 }

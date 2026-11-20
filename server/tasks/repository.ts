@@ -216,6 +216,12 @@ export function createTaskRepository(db: Database.Database) {
       .get(sessionId) !== undefined
   }
 
+  function lastTurnPosition(sessionId: string): number {
+    return db.prepare<[string], { position: number }>(
+      'SELECT COALESCE(MAX(position), -1) AS position FROM turns WHERE session_id = ?',
+    ).get(sessionId)!.position
+  }
+
   function hasRunningTurn(sessionId: string): boolean {
     return db.prepare("SELECT 1 FROM turns WHERE session_id = ? AND status = 'running' LIMIT 1").get(sessionId) !== undefined
   }
@@ -271,5 +277,5 @@ export function createTaskRepository(db: Database.Database) {
 
   return { get, getUnfinished, list, insert, update, getCommand, saveCommand, appendEvent, insertArtifact,
     getArtifact, hasArtifactSources, isCleared, getSession, hasPendingClear, hasRunningTurn, hasUnresolvedOperations,
-    getTurn, isAwaitingGoal, listValidations, listRecoveryOperations }
+    getTurn, lastTurnPosition, isAwaitingGoal, listValidations, listRecoveryOperations }
 }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { createArtifactStore } from '../server/tasks/artifacts'
+import { createTurnRepository } from '../server/persistence/turn-repository'
 import { openChatDatabase } from '../server/persistence/db'
 import { fixture, material } from './task-workflow-fixture'
 
@@ -26,4 +27,26 @@ it('checks slot permissions and source ownership before storing material', async
   await task.denied({ ...material('plan', 'text'), sourceMessageIds: ['unknown-message'] }, 'INVALID_INPUT')
   await task.denied({ ...material('plan', 'text'), sourceToolCallIds: ['foreign-call'] }, 'INVALID_INPUT')
   expect(task.view().task?.artifacts).toEqual([])
+})
+
+it('accepts only tool receipts from turns after this task attached its workflow', async () => {
+  const task = fixture(db, true)
+  const turns = createTurnRepository(db)
+  function recordCall(position: number, toolCallId: string) {
+    const turnId = 'turn-' + position
+    const timestamp = '2026-11-20T12:00:00.000Z'
+    db.prepare(`INSERT INTO turns (id, task_id, session_id, request_id, position, status, model_id,
+      agent_config_json, started_at, updated_at) VALUES (?, ?, ?, ?, ?, 'running', 'mock', '{}', ?, ?)`)
+      .run(turnId, task.id, task.sessionId, turnId, position, timestamp, timestamp)
+    expect(turns.recordToolStart({ turnId, toolCallId, name: 'read_file', stepIndex: 0, input: {} })).toBe(true)
+    turns.recordToolEnd({ turnId, toolCallId, output: { ok: true, content: 'material' } })
+    turns.markStopped(turnId)
+  }
+  recordCall(0, 'prior-read')
+  await task.ok({ type: 'attach', workflowId: task.published.workflowId, version: 1 }, 'user')
+  recordCall(1, 'workflow-read')
+  const plan = material('plan', 'Fresh material')
+  await task.denied({ ...plan, sourceToolCallIds: ['prior-read'] }, 'INVALID_INPUT')
+  await task.denied({ ...plan, sourceToolCallIds: ['workflow-read', 'prior-read'] }, 'INVALID_INPUT')
+  await task.ok({ ...plan, sourceToolCallIds: ['workflow-read'] })
 })
