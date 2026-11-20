@@ -1,15 +1,27 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type {
-  JsonValue, TaskActorContext, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView,
+  JsonValue, TaskActorContext, TaskArtifact, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView,
 } from '../../shared/task'
-import type { ExpectedAction } from '../../shared/workflow'
+import type { ExpectedAction, WorkflowNode } from '../../shared/workflow'
 import { createWorkflowRepository } from '../workflows/repository'
 import { assertJsonValue, canonicalJson, expectedActionSchema } from '../workflows/schema'
+import { createApprovalStore } from './approvals'
+import { createArtifactStore, nonempty } from './artifacts'
+import { completionError, currentArtifact, evaluateTransition, hasApproval } from './workflow'
 import { TaskError } from './errors'
 import { createTaskRepository } from './repository'
 
 type ArtifactSource = { content: JsonValue; sourceMessageIds: string[]; sourceToolCallIds: string[] }
+
+type TaskState = Parameters<ReturnType<typeof createTaskRepository>['update']>[2]
+
+interface Mutation {
+  state: TaskState
+  type: string
+  details?: Record<string, JsonValue>
+  resumeRequestId?: string
+}
 
 interface CreateInput {
   sessionId: string
@@ -46,13 +58,6 @@ function hash(json: string): string {
   return createHash('sha256').update(json).digest('hex')
 }
 
-function nonempty(content: JsonValue): boolean {
-  if (typeof content === 'string') return content.trim() !== ''
-  if (Array.isArray(content)) return content.some(nonempty)
-  if (content !== null && typeof content === 'object') return Object.values(content).some(nonempty)
-  return content !== null
-}
-
 function requireActive(task: TaskSnapshot): void {
   if (task.status === 'paused') reject('TASK_PAUSED', 'Task is paused')
   if (task.status === 'cancelled') reject('TASK_CANCELLED', 'Task is cancelled')
@@ -61,6 +66,8 @@ function requireActive(task: TaskSnapshot): void {
 
 export function createTaskService(db: Database.Database, options: { now?: () => string; newId?: () => string } = {}) {
   const repository = createTaskRepository(db)
+  const artifacts = createArtifactStore(db)
+  const approvals = createApprovalStore(db)
   const workflows = createWorkflowRepository(db)
   const now = options.now ?? (() => new Date().toISOString())
   const newId = options.newId ?? randomUUID
@@ -107,31 +114,30 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     checkRecovery(sessionId, task)
   }
 
+  function pinWorkflow(id: string, version: number) {
+    if (typeof id !== 'string' || !id.trim() || !Number.isSafeInteger(version) || version < 1) {
+      reject('INVALID_INPUT', 'A valid workflow version is required')
+    }
+    const pinned = workflows.get(id, version)
+    if (!pinned) reject('NOT_FOUND', 'Workflow version was not found')
+    const entry = pinned.definition.nodes.find(node => node.id === pinned.definition.entryNodeId)
+    if (!entry) throw new Error('Published workflow is missing its entry node')
+    return { workflowId: id, workflowVersion: version, ...position(entry) }
+  }
+
+  function position(node: WorkflowNode) {
+    return { nodeId: node.id, nodeVisitId: newId(), stage: node.stage, step: node.label, expected: node.expected }
+  }
+
   function startTask(sessionId: string, goal: string, workflow: CreateInput['workflow'], timestamp: string) {
-    let nodeId = null
-    let nodeVisitId = null
-    let stage = 'execution'
-    let step = 'Выполнение задачи'
-    let expected = goal ? agentResult : userInput
-    if (workflow) {
-      if (!workflow.id.trim() || !Number.isSafeInteger(workflow.version) || workflow.version < 1) {
-        reject('INVALID_INPUT', 'A valid workflow version is required')
-      }
-      const version = workflows.get(workflow.id, workflow.version)
-      if (!version) reject('NOT_FOUND', 'Workflow version was not found')
-      const entry = version.definition.nodes.find(node => node.id === version.definition.entryNodeId)
-      if (!entry) throw new Error('Published workflow is missing its entry node')
-      nodeId = entry.id
-      nodeVisitId = newId()
-      stage = entry.stage
-      step = entry.label
-      expected = entry.expected
+    const initial = workflow ? pinWorkflow(workflow.id, workflow.version) : {
+      workflowId: null, workflowVersion: null, nodeId: null, nodeVisitId: null,
+      stage: 'execution', step: 'Выполнение задачи', expected: goal ? agentResult : userInput,
     }
     const id = newId()
     repository.insert({
-      id, sessionId, task: goal || emptyGoal, status: 'active', nodeId, nodeVisitId, stage, step, expected,
-      workflowId: workflow?.id ?? null, workflowVersion: workflow?.version ?? null, progress: '',
-      createdAt: timestamp, updatedAt: timestamp,
+      id, sessionId, task: goal || emptyGoal, status: 'active', ...initial,
+      progress: '', createdAt: timestamp, updatedAt: timestamp,
     })
     return repository.get(id)!
   }
@@ -185,23 +191,34 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     return accept(operationId, actor, inputHash, task, 'created', { awaitingGoal: !goal })
   })
 
-  function saveArtifact(task: TaskSnapshot, key: string, type: 'note' | 'result',
-    source: ArtifactSource, timestamp: string): string {
+  function saveArtifact(task: TaskSnapshot, key: string, type: TaskArtifact['type'],
+    source: ArtifactSource, timestamp: string, current: TaskArtifact | null | undefined): string {
     const { content, sourceMessageIds, sourceToolCallIds } = source
     assertJsonValue(content)
     const contentJson = canonicalJson(content)
     if (Buffer.byteLength(contentJson, 'utf8') > maxArtifactBytes) reject('INVALID_INPUT', 'Task artifact is too large')
+    const digest = hash(contentJson)
+    if (current?.type === type && current.hash === digest
+      && JSON.stringify(current.sourceMessageIds) === JSON.stringify(sourceMessageIds)
+      && JSON.stringify(current.sourceToolCallIds) === JSON.stringify(sourceToolCallIds)) return current.id
     const id = newId()
     repository.insertArtifact({
       id, taskId: task.id, key, type, content, sourceMessageIds, sourceToolCallIds,
-      hash: hash(contentJson), createdAt: timestamp,
+      hash: digest, createdAt: timestamp,
     }, contentJson)
     return id
   }
 
-  function applyBasic(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string) {
-    const state = { task: task.task, status: task.status, stage: task.stage, expected: task.expected,
-      progress: task.progress, resultArtifactId: task.result?.id ?? null, updatedAt: timestamp }
+  function checkArtifactSources(task: TaskSnapshot, command: Extract<TaskCommand, { type: 'submit_artifact' }>) {
+    if (!artifactKey.test(command.key) || !Array.isArray(command.sourceMessageIds) || !Array.isArray(command.sourceToolCallIds)
+      || !command.sourceMessageIds.every(id => typeof id === 'string') || !command.sourceToolCallIds.every(id => typeof id === 'string')
+      || !repository.hasArtifactSources(task, command.sourceMessageIds, command.sourceToolCallIds)) {
+      reject('INVALID_INPUT', 'Artifact key or sources are invalid')
+    }
+  }
+
+  function applyCommand(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string): Mutation {
+    const state: TaskState = { ...task, resultArtifactId: task.result?.id ?? null, updatedAt: timestamp }
     const userOnly = command.type === 'pause' || command.type === 'resume' || command.type === 'cancel'
       || command.type === 'complete_basic'
     if (userOnly && actor.role !== 'user') reject('TRANSITION_NOT_ALLOWED', 'Action requires a user')
@@ -209,6 +226,24 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       reject('TASK_TERMINAL', 'Task is terminal')
     }
     if (task.status === 'cancelled') reject('TASK_CANCELLED', 'Task is cancelled')
+
+    if (command.type === 'attach') {
+      requireActive(task)
+      if (actor.role !== 'user' || task.workflowId) reject('TRANSITION_NOT_ALLOWED', 'Only a user can attach a workflow to a basic task')
+      checkTurnStart(task.sessionId, task)
+      return { state: { ...state, ...pinWorkflow(command.workflowId, command.version) }, type: 'workflow_attached',
+        details: { priorArtifactIds: task.artifacts.map(item => item.id) } }
+    }
+
+    if (task.workflowId && !userOnly) {
+      requireActive(task)
+      checkRecovery(task.sessionId, task)
+      if (actor.stepNodeVisitId !== undefined && actor.stepNodeVisitId !== task.nodeVisitId) {
+        reject('TRANSITION_NOT_ALLOWED', 'Workflow node visit changed')
+      }
+      if (command.type !== 'update_progress') return applyWorkflow(task, command, actor, state)
+      if (command.expected !== undefined) reject('TRANSITION_NOT_ALLOWED', 'Expected action is defined by the pinned workflow')
+    }
 
     switch (command.type) {
       case 'pause':
@@ -225,7 +260,6 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
         checkRecovery(task.sessionId, task)
         return { state: { ...state, status: 'done' as const, stage: 'done' }, type: 'completed' }
       case 'update_progress': {
-        if (task.workflowId) reject('TRANSITION_NOT_ALLOWED', 'Workflow commands are unavailable')
         requireActive(task)
         checkRecovery(task.sessionId, task)
         if (typeof command.progress !== 'string' || command.progress.length > 2_000) {
@@ -236,19 +270,13 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
         return { state: { ...state, progress: command.progress, expected }, type: 'progress_updated' }
       }
       case 'submit_artifact': {
-        if (task.workflowId) reject('TRANSITION_NOT_ALLOWED', 'Workflow commands are unavailable')
         requireActive(task)
         checkRecovery(task.sessionId, task)
-        if (!artifactKey.test(command.key) || !Array.isArray(command.sourceMessageIds) || !Array.isArray(command.sourceToolCallIds)
-          || !command.sourceMessageIds.every(id => typeof id === 'string') || !command.sourceToolCallIds.every(id => typeof id === 'string')
-          || !repository.hasArtifactSources(task, command.sourceMessageIds, command.sourceToolCallIds)) {
-          reject('INVALID_INPUT', 'Artifact key or sources are invalid')
-        }
-        const artifactId = saveArtifact(task, command.key, 'note', command, timestamp)
+        checkArtifactSources(task, command)
+        const artifactId = saveArtifact(task, command.key, 'note', command, timestamp, artifacts.latest(task.id, command.key))
         return { state, type: 'artifact_submitted', details: { artifactId } }
       }
       case 'finish': {
-        if (task.workflowId) reject('TRANSITION_NOT_ALLOWED', 'Workflow commands are unavailable')
         requireActive(task)
         checkRecovery(task.sessionId, task)
         if (actor.role === 'agent' && task.expected.actor === 'user') {
@@ -265,7 +293,7 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
           ? repository.getArtifact(task.id, command.resultArtifactId)
           : { content: command.resultText?.trim() ?? '', sourceMessageIds: [], sourceToolCallIds: [] }
         if (!source || !nonempty(source.content)) reject('INVALID_INPUT', 'Task result must be nonempty and belong to the task')
-        const resultArtifactId = saveArtifact(task, 'result', 'result', source, timestamp)
+        const resultArtifactId = saveArtifact(task, 'result', 'result', source, timestamp, artifacts.latest(task.id, 'result'))
         return {
           state: { ...state, status: 'done' as const, stage: 'done', resultArtifactId },
           type: 'completed', details: { artifactId: resultArtifactId },
@@ -275,6 +303,107 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
         return reject('TRANSITION_NOT_ALLOWED', 'Workflow commands are unavailable')
     }
   }
+
+  function applyWorkflow(task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, state: TaskState): Mutation {
+    const definition = workflows.get(task.workflowId!, task.workflowVersion!)!.definition
+    const node = definition.nodes.find(item => item.id === task.nodeId)
+    if (!node || !task.nodeVisitId) reject('TRANSITION_NOT_ALLOWED', 'Workflow position is invalid')
+    const evidence = { artifacts: artifacts.workflowArtifacts(task.id), approvals: approvals.list(task.id),
+      validations: repository.listValidations(task.id) }
+    const at = state.updatedAt
+
+    if (command.type === 'submit_artifact') {
+      const slot = definition.artifactSlots.find(item => item.key === command.key)
+      const writers = definition.nodes.filter(item => item.writableArtifacts.includes(command.key))
+      if (!slot || !node.writableArtifacts.includes(command.key)) {
+        if (writers.length && writers.every(item => item.requiredApprovalKeys.some(key => !hasApproval(task, evidence, key)))) {
+          reject('PLAN_APPROVAL_REQUIRED', 'Writing this material requires a current approval')
+        }
+        reject('TRANSITION_NOT_ALLOWED', 'This node cannot write the requested artifact')
+      }
+      if (node.requiredApprovalKeys.some(key => !hasApproval(task, evidence, key))) {
+        reject('PLAN_APPROVAL_REQUIRED', 'Current node requires an approved artifact')
+      }
+      checkArtifactSources(task, command)
+      const current = currentArtifact(task, evidence, slot.key)
+      const artifactId = saveArtifact(task, slot.key, slot.type, command, at, current)
+      if (artifactId !== current?.id) {
+        if (node.kind === 'approval' && node.expected.artifactKey === slot.key) {
+          approvals.request(newId(), task.id, artifactId, slot.key, task.nodeVisitId, at)
+        } else {
+          approvals.obsolete(task.id, slot.key, at)
+        }
+      }
+      return { state, type: 'artifact_submitted', details: { artifactId } }
+    }
+
+    let transitionId: string
+    let approvalId: string | undefined
+    if (command.type === 'approve') {
+      if (actor.role !== 'user' || node.kind !== 'approval') reject('TRANSITION_NOT_ALLOWED', 'Approval requires a user at an approval node')
+      const edges = definition.transitions.filter(edge => edge.from === node.id && edge.event === 'approve' && edge.actor === 'user')
+      if (edges.length !== 1) reject('TRANSITION_NOT_ALLOWED', 'Approval node must have one user approval transition')
+      const artifact = currentArtifact(task, evidence, node.expected.artifactKey ?? '')
+      if (!artifact || !approvals.approve(command.approvalId, task.id, artifact.id, task.nodeVisitId, actor.turnId, at)) {
+        reject('PLAN_APPROVAL_REQUIRED', 'Approval request is no longer current for this visit and artifact')
+      }
+      approvalId = command.approvalId
+      evidence.approvals = approvals.list(task.id)
+      transitionId = edges[0]!.id
+    } else if (command.type === 'finish') {
+      if (typeof command.resultArtifactId !== 'string' || command.resultText !== undefined) {
+        reject('INVALID_INPUT', 'Workflow finish requires an exact result artifact ID')
+      }
+      const code = completionError(task, definition, evidence)
+      if (code) reject(code, 'Current completion evidence is required')
+      const result = currentArtifact(task, evidence, definition.resultArtifactKey)!
+      if (result.id !== command.resultArtifactId) reject('INVALID_INPUT', 'Current task result is required')
+      if (node.kind === 'success') {
+        if (node.requiredApprovalKeys.some(key => !hasApproval(task, evidence, key))) {
+          reject('PLAN_APPROVAL_REQUIRED', 'Completion requires a current approval')
+        }
+        return { state: { ...state, status: 'done', resultArtifactId: result.id }, type: 'completed', details: { artifactId: result.id } }
+      }
+      const edge = definition.transitions.find(edge => edge.from === node.id && edge.event !== 'approve'
+        && definition.nodes.some(target => target.id === edge.to && target.kind === 'success')
+        && evaluateTransition(task, definition, edge.id, evidence, actor).allowed)
+      if (!edge) reject('TRANSITION_NOT_ALLOWED', 'No permitted transition to success')
+      transitionId = edge.id
+    } else if (command.type === 'transition') {
+      transitionId = command.transitionId
+      if (definition.transitions.some(edge => edge.id === transitionId && edge.event === 'approve')) {
+        reject('TRANSITION_NOT_ALLOWED', 'Approval transition requires its user request')
+      }
+    } else {
+      return reject('TRANSITION_NOT_ALLOWED', 'Command is unavailable for this workflow')
+    }
+
+    const decision = evaluateTransition(task, definition, transitionId, evidence, actor)
+    if (!decision.allowed) reject(decision.code, 'Workflow transition requirements were not met')
+    const target = definition.nodes.find(item => item.id === decision.targetNodeId)!
+    const edge = definition.transitions.find(item => item.id === transitionId)!
+    const next = position(target)
+    for (const key of edge.invalidateApprovalKeys) approvals.obsolete(task.id, key, at)
+    if (node.kind === 'approval' && !approvalId && node.expected.artifactKey) {
+      approvals.obsolete(task.id, node.expected.artifactKey, at)
+    }
+    if (target.kind === 'approval') {
+      const artifact = currentArtifact(task, evidence, target.expected.artifactKey!)!
+      approvals.request(newId(), task.id, artifact.id, artifact.key, next.nodeVisitId, at)
+    }
+    const details: Record<string, JsonValue> = { transitionId, fromNodeId: node.id, fromNodeVisitId: task.nodeVisitId,
+      toNodeId: target.id, toNodeVisitId: next.nodeVisitId }
+    if (approvalId) details.approvalId = approvalId
+    if (target.kind === 'success') {
+      const result = currentArtifact(task, evidence, definition.resultArtifactKey)!
+      return { state: { ...state, ...next, status: 'done', resultArtifactId: result.id }, type: 'completed',
+        details: { ...details, artifactId: result.id } }
+    }
+    return { state: { ...state, ...next }, type: approvalId ? 'approved' : 'transitioned', details }
+  }
+
+  // A rejected command gets a receipt in the outer transaction. Roll back any tentative evidence writes first.
+  const mutate = db.transaction(applyCommand)
 
   const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext): TaskCommandResult => {
     const { operationId, expectedRevision, command } = envelope
@@ -298,7 +427,7 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     }
 
     const task = getOwned(taskId, actor.sessionId)
-    let mutation: ReturnType<typeof applyBasic>
+    let mutation: Mutation
     try {
       checkSession(actor.sessionId)
       if (!task) reject('NOT_FOUND', 'Task was not found')
@@ -310,7 +439,7 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       }
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) reject('INVALID_INPUT', 'Task revision is invalid')
       if (task.revision !== expectedRevision) reject('STALE_TASK_REVISION', 'Task revision changed')
-      mutation = applyBasic(task, command, actor, now())
+      mutation = mutate(task, command, actor, now())
     } catch (error) {
       if (!(error instanceof TaskError)) throw error
       return deny(operationId, actor, inputHash, error, task, task?.id ?? null)
@@ -327,15 +456,26 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
   function view(taskId: string, sessionId: string): TaskView {
     const task = getOwned(taskId, sessionId)
     const actions: TaskView['actions'] = []
+    const requests = task ? approvals.list(task.id) : []
+    const validations = task ? repository.listValidations(task.id) : []
     const recoveryOperations = task ? repository.listRecoveryOperations(task.id) : []
     if (task?.status === 'active' || task?.status === 'paused') {
       const blocked = task.recovery === 'needs_review' || repository.hasUnresolvedOperations(sessionId)
       if (task.status === 'active') actions.push({ type: 'pause', label: 'Пауза' })
       else if (!blocked) actions.push({ type: 'resume', label: 'Продолжить задачу' })
       actions.push({ type: 'cancel', label: 'Отменить задачу' })
+      if (task.status === 'active' && !blocked) {
+        if (!task.workflowId && repository.getSession(sessionId)?.status !== 'running' && !repository.hasRunningTurn(sessionId)) {
+          actions.push({ type: 'attach', label: 'Подключить процесс' })
+        }
+        const pending = requests.find(item => item.status === 'pending' && item.artifact.key === task.expected.artifactKey)
+        if (task.expected.kind === 'approval' && pending) {
+          actions.push({ type: 'approve', label: task.expected.label, approvalId: pending.id })
+        }
+      }
       if (!task.workflowId && !blocked) actions.push({ type: 'complete_basic', label: 'Завершить задачу' })
     }
-    return { task, actions, approvals: [], validations: [], recoveryOperations }
+    return { task, actions, approvals: requests, validations, recoveryOperations }
   }
 
   const reserveForTurn = db.transaction((input: ReserveInput, actor: TaskActorContext): TaskSnapshot | null => {

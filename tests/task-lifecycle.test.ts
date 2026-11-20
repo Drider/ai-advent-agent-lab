@@ -120,10 +120,11 @@ describe('basic task lifecycle', () => {
       .toMatchObject({ ok: false, error: { code: 'TRANSITION_NOT_ALLOWED' }, task })
   })
 
-  it('rejects workflow commands until the workflow engine is available', async () => {
+  it('requires a published version for attach and rejects workflow-only commands in basic mode', async () => {
     const task = create()
+    expect(await apply(task.id, { type: 'attach', workflowId: 'missing', version: 1 }))
+      .toMatchObject({ ok: false, error: { code: 'NOT_FOUND' }, task })
     for (const command of [
-      { type: 'attach', workflowId: 'flow', version: 1 },
       { type: 'transition', transitionId: 'advance' },
       { type: 'validate' },
       { type: 'approve', approvalId: 'approval' },

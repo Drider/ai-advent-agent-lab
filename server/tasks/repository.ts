@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { ArtifactRef, JsonValue, TaskActorContext, TaskArtifact, TaskCommandResult, TaskSnapshot, TaskView } from '../../shared/task'
+import type { ArtifactRef, JsonValue, TaskActorContext, TaskArtifact, TaskCommandResult, TaskSnapshot, TaskView, ValidationResult } from '../../shared/task'
 
 interface TaskRow {
   id: string
@@ -23,7 +23,8 @@ interface TaskRow {
 }
 
 type NewTask = Omit<TaskSnapshot, 'artifacts' | 'result' | 'recovery' | 'revision'>
-type UpdateTask = Pick<TaskSnapshot, 'task' | 'status' | 'stage' | 'expected' | 'progress' | 'updatedAt'> & {
+type UpdateTask = Pick<TaskSnapshot, 'task' | 'status' | 'stage' | 'step' | 'expected' | 'progress' | 'updatedAt'
+  | 'workflowId' | 'workflowVersion' | 'nodeId' | 'nodeVisitId'> & {
   resultArtifactId: string | null
 }
 
@@ -115,7 +116,8 @@ export function createTaskRepository(db: Database.Database) {
 
   function update(id: string, revision: number, state: UpdateTask): void {
     const { changes } = db.prepare(`
-      UPDATE tasks SET task = @task, status = @status, stage = @stage, expected_json = @expectedJson,
+      UPDATE tasks SET task = @task, status = @status, stage = @stage, step = @step, expected_json = @expectedJson,
+        workflow_id = @workflowId, workflow_version = @workflowVersion, node_id = @nodeId, node_visit_id = @nodeVisitId,
         progress = @progress, result_artifact_id = @resultArtifactId, updated_at = @updatedAt, revision = revision + 1
       WHERE id = @id AND revision = @revision
     `).run({ ...state, id, revision, expectedJson: JSON.stringify(state.expected) })
@@ -243,6 +245,17 @@ export function createTaskRepository(db: Database.Database) {
     `).get({ sessionId: task.sessionId, id: task.id }) !== undefined
   }
 
+  function listValidations(taskId: string): ValidationResult[] {
+    const rows = db.prepare<[string], Omit<ValidationResult, 'inputs' | 'details'> & { inputsJson: string; detailsJson: string }>(`
+      SELECT id, task_id AS taskId, check_id AS checkId, checker_version AS checkerVersion,
+        node_visit_id AS nodeVisitId, inputs_json AS inputsJson, outcome, details_json AS detailsJson, created_at AS createdAt
+      FROM task_validations WHERE task_id = ? ORDER BY rowid
+    `).all(taskId)
+    return rows.map(({ inputsJson, detailsJson, ...row }) => ({
+      ...row, inputs: JSON.parse(inputsJson), details: JSON.parse(detailsJson),
+    }))
+  }
+
   function listRecoveryOperations(taskId: string): TaskView['recoveryOperations'] {
     const rows = db.prepare<[string], ToolOperationRow>(`
       SELECT id, tool_name AS toolName, status, path, expected_hash AS expectedHash, observed_hash AS observedHash
@@ -258,5 +271,5 @@ export function createTaskRepository(db: Database.Database) {
 
   return { get, getUnfinished, list, insert, update, getCommand, saveCommand, appendEvent, insertArtifact,
     getArtifact, hasArtifactSources, isCleared, getSession, hasPendingClear, hasRunningTurn, hasUnresolvedOperations,
-    getTurn, isAwaitingGoal, listRecoveryOperations }
+    getTurn, isAwaitingGoal, listValidations, listRecoveryOperations }
 }
