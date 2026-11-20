@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -82,6 +83,22 @@ describe('transactional task commands', () => {
     expect(service.create({ sessionId: user.sessionId, operationId: 'create', task: 'Отчёт' }, user))
       .toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' }, task: null })
     expect(db.prepare('SELECT id FROM tasks').all()).toHaveLength(0)
+  })
+
+  it('replays an original-format message reservation after its turn starts', () => {
+    const { sessionId } = user
+    const actor = { ...user, role: 'system' } as const
+    const request = { sessionId, kind: 'message', requestId: 'original-reservation', messageText: 'Отчёт' } as const
+    const originalHash = createHash('sha256').update('{"messageText":"Отчёт","type":"reserve","workflow":null}').digest('hex')
+    db.prepare(`
+      INSERT INTO task_commands (operation_id, session_id, task_id, actor, input_hash, phase, receipt_json, created_at, updated_at)
+      VALUES (?, ?, ?, 'system', ?, 'completed', ?, ?, ?)
+    `).run(request.requestId, sessionId, task.id, originalHash, JSON.stringify({ ok: true, task }), now, now)
+    db.prepare("UPDATE sessions SET status = 'running' WHERE id = ?").run(sessionId)
+
+    expect(service.reserveForTurn(request, actor)).toEqual(task)
+    expect(() => service.reserveForTurn({ ...request, kind: 'continue', sourceTurnId: 'source-turn' }, actor))
+      .toThrow(expect.objectContaining({ code: 'OPERATION_CONFLICT' }))
   })
 
   it('replays a turn reservation before checking the now-running session', async () => {

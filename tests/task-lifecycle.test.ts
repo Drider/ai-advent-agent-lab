@@ -32,6 +32,24 @@ function apply(taskId: string, command: TaskCommand, expectedRevision = 0, actor
   return service.apply(taskId, { operationId, expectedRevision, command }, actor)
 }
 
+function publishWorkflow() {
+  const expected = { actor: 'agent', kind: 'result', label: 'Подготовить итог' } as const
+  return createWorkflowRepository(db).create('Отчёт', {
+    schemaVersion: 1,
+    entryNodeId: 'done',
+    resultArtifactKey: 'result',
+    artifactSlots: [{ key: 'result', type: 'result' }],
+    nodes: [{
+      id: 'done', kind: 'success', stage: 'review', label: 'Итог', expected,
+      allowedTools: [], writableArtifacts: [], requiredApprovalKeys: [], checkIds: [],
+    }],
+    transitions: [],
+    checks: [{ id: 'fields', kind: 'fields', artifactKeys: ['result'], options: { fields: [] } }],
+    completionCheckIds: ['fields'],
+    contextExports: [],
+  })
+}
+
 describe('basic task lifecycle', () => {
   it('starts an empty goal by waiting for user input', () => {
     const task = create('  ')
@@ -118,21 +136,8 @@ describe('basic task lifecycle', () => {
   })
 
   it('pins a published workflow entry and blocks manual completion', async () => {
-    const expected = { actor: 'agent', kind: 'result', label: 'Подготовить итог' } as const
-    const version = createWorkflowRepository(db).create('Отчёт', {
-      schemaVersion: 1,
-      entryNodeId: 'done',
-      resultArtifactKey: 'result',
-      artifactSlots: [{ key: 'result', type: 'result' }],
-      nodes: [{
-        id: 'done', kind: 'success', stage: 'review', label: 'Итог', expected,
-        allowedTools: [], writableArtifacts: [], requiredApprovalKeys: [], checkIds: [],
-      }],
-      transitions: [],
-      checks: [{ id: 'fields', kind: 'fields', artifactKeys: ['result'], options: { fields: [] } }],
-      completionCheckIds: ['fields'],
-      contextExports: [],
-    })
+    const version = publishWorkflow()
+    const expected = version.definition.nodes[0]!.expected
     const creation = service.create({
       sessionId: user.sessionId, task: '', operationId: 'create-pinned',
       workflow: { id: version.workflowId, version: version.version },
@@ -155,6 +160,30 @@ describe('basic task lifecycle', () => {
       task: 'Отчёт за ноябрь', revision: 1, nodeId: 'done', nodeVisitId: creation.task.nodeVisitId,
       workflowId: version.workflowId, workflowVersion: 1, stage: 'review', step: 'Итог', expected,
     })
+  })
+
+  it.each(['explicit', 'first message'])('preserves the literal workflow goal if supplied by %s', (source) => {
+    const version = publishWorkflow()
+    const { sessionId } = user
+    const system = { ...user, role: 'system' } as const
+    const creation = service.create({
+      sessionId, task: source === 'explicit' ? 'Новая задача' : '', operationId: 'create-pinned',
+      workflow: { id: version.workflowId, version: version.version },
+    }, user)
+    if (!creation.ok) throw new Error(creation.error.code)
+    const supplied = source === 'explicit'
+      ? creation.task
+      : service.reserveForTurn({
+          sessionId, kind: 'message', requestId: 'first-message', messageText: 'Новая задача',
+        }, system)
+    expect(supplied).toMatchObject({
+      task: 'Новая задача', revision: source === 'explicit' ? 0 : 1,
+      nodeId: creation.task.nodeId, nodeVisitId: creation.task.nodeVisitId, expected: creation.task.expected,
+    })
+
+    expect(service.reserveForTurn({
+      sessionId, kind: 'message', requestId: 'later-message', messageText: 'Уточнение',
+    }, system)).toEqual(supplied)
   })
 
   it('binds an agent command to the task of its server-supplied turn', async () => {

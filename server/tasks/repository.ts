@@ -232,6 +232,17 @@ export function createTaskRepository(db: Database.Database) {
     `).get(id, sessionId)
   }
 
+  function isAwaitingGoal(task: TaskSnapshot): boolean {
+    return db.prepare(`
+      SELECT 1 FROM task_events
+      WHERE session_id = @sessionId AND task_id = @id
+        AND type = 'created' AND json_extract(details_json, '$.awaitingGoal') = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM task_events WHERE session_id = @sessionId AND task_id = @id AND type = 'input_received'
+        )
+    `).get({ sessionId: task.sessionId, id: task.id }) !== undefined
+  }
+
   function listRecoveryOperations(taskId: string): TaskView['recoveryOperations'] {
     const rows = db.prepare<[string], ToolOperationRow>(`
       SELECT id, tool_name AS toolName, status, path, expected_hash AS expectedHash, observed_hash AS observedHash
@@ -247,5 +258,5 @@ export function createTaskRepository(db: Database.Database) {
 
   return { get, getUnfinished, list, insert, update, getCommand, saveCommand, appendEvent, insertArtifact,
     getArtifact, hasArtifactSources, isCleared, getSession, hasPendingClear, hasRunningTurn, hasUnresolvedOperations,
-    getTurn, listRecoveryOperations }
+    getTurn, isAwaitingGoal, listRecoveryOperations }
 }

@@ -70,11 +70,18 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     return task?.sessionId === sessionId ? task : null
   }
 
-  function checkReplay(operationId: string, taskId: string | null, actor: TaskActorContext, inputHash: string) {
+  function checkReplay(
+    operationId: string,
+    taskId: string | null,
+    actor: TaskActorContext,
+    inputHash: string,
+    originalInputHash?: string,
+  ) {
     if (repository.isCleared(operationId)) reject('OPERATION_CONFLICT', 'Operation was cleared from history')
     const receipt = repository.getCommand(operationId)
     if (!receipt) return
-    if (receipt.session_id !== actor.sessionId || receipt.actor !== actor.role || receipt.input_hash !== inputHash
+    if (receipt.session_id !== actor.sessionId || receipt.actor !== actor.role
+      || (receipt.input_hash !== inputHash && receipt.input_hash !== originalInputHash)
       || (taskId !== null && receipt.task_id !== null && receipt.task_id !== taskId) || receipt.receipt_json === null) {
       reject('OPERATION_CONFLICT', 'Operation ID already belongs to a different or unfinished command')
     }
@@ -161,11 +168,11 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       if (!(error instanceof TaskError)) throw error
       return failure(error)
     }
+    const goal = input.task.trim()
     let task: TaskSnapshot
     try {
       if (actor.role !== 'user') reject('TRANSITION_NOT_ALLOWED', 'Only a user can create a task explicitly')
       if (actor.turnId !== undefined) reject('INVALID_INPUT', 'Explicit task creation cannot belong to a turn')
-      const goal = input.task.trim()
       if (goal.length > maxGoalLength) reject('INVALID_INPUT', 'Task goal is too long')
       existing = repository.getUnfinished(sessionId)
       checkTurnStart(sessionId, existing)
@@ -175,7 +182,7 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       if (!(error instanceof TaskError)) throw error
       return deny(operationId, actor, inputHash, error, existing, null)
     }
-    return accept(operationId, actor, inputHash, task, 'created')
+    return accept(operationId, actor, inputHash, task, 'created', { awaitingGoal: !goal })
   })
 
   function saveArtifact(task: TaskSnapshot, key: string, type: 'note' | 'result',
@@ -336,11 +343,12 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     if (actor.role !== 'system' || actor.sessionId !== sessionId || actor.turnId !== undefined || !requestId.trim()) {
       reject('INVALID_INPUT', 'Turn reservation requires the system context of the session')
     }
-    const inputHash = hash(canonicalJson({
-      type: 'reserve', kind, sourceTurnId: input.sourceTurnId ?? null,
-      messageText: input.messageText, workflow: input.workflow ?? null,
-    }))
-    const replay = checkReplay(requestId, null, actor, inputHash)
+    const reservation = { type: 'reserve', messageText: input.messageText, workflow: input.workflow ?? null }
+    const inputHash = hash(canonicalJson({ ...reservation, kind, sourceTurnId: input.sourceTurnId ?? null }))
+    const originalInputHash = kind === 'message' && input.sourceTurnId === undefined
+      ? hash(canonicalJson(reservation))
+      : undefined
+    const replay = checkReplay(requestId, null, actor, inputHash, originalInputHash)
     if (replay) {
       if (!replay.ok) reject(replay.error.code, replay.error.message)
       return replay.task
@@ -361,12 +369,12 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     const goal = input.messageText.trim().slice(0, maxGoalLength)
     if (!task) {
       const created = startTask(sessionId, goal, input.workflow, now())
-      accept(requestId, actor, inputHash, created, 'created')
+      accept(requestId, actor, inputHash, created, 'created', { awaitingGoal: !goal })
       return created
     }
     requireActive(task)
     const waitingForInput = !task.workflowId && task.expected.actor === 'user' && task.expected.kind === 'input'
-    const hasTemporaryGoal = task.task === emptyGoal
+    const hasTemporaryGoal = Boolean(goal) && repository.isAwaitingGoal(task)
     if (goal && (hasTemporaryGoal || waitingForInput)) {
       repository.update(task.id, task.revision, {
         ...task, task: hasTemporaryGoal ? goal : task.task, expected: waitingForInput ? agentResult : task.expected,
