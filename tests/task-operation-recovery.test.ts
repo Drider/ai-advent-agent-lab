@@ -104,3 +104,24 @@ it('preserves an earlier source receipt when a later turn replays its action', a
     expect(receipts.map(row => row.toolCallId)).toEqual(['original', 'second-call'])
   } finally { f.close() }
 })
+
+it('consumes a legacy failure marker before reopening the same call for another attempt', async () => {
+  const f = taskToolFixture()
+  try {
+    const operationId = 'interrupted-check'
+    const start = { turnId: f.actor.turnId, toolCallId: 'check', taskId: f.id, name: 'run_task_checks',
+      stepIndex: 0, input: { operationId }, retryFailedTaskCommand: true }
+    f.turns.recordToolStart(start)
+    // Persisted layout from before validation reservations identified an execution attempt.
+    f.db.prepare(`INSERT INTO task_commands (operation_id, session_id, task_id, actor, input_hash, phase, created_at, updated_at)
+      VALUES (?, ?, ?, 'agent', 'hash', 'running', '0', '0')`).run(operationId, f.sessionId, f.id)
+    f.db.prepare(`INSERT INTO task_events (id, session_id, task_id, operation_id, source_turn_id, actor, type,
+      phase, revision, details_json, created_at) VALUES ('legacy-token', ?, ?, ?, ?, 'agent', 'validation_requested',
+      'completed', 0, '{"failedToolCallId":"check","toolError":"commit failed","leaseUntil":0}', '0')`)
+      .run(f.sessionId, f.id, operationId, f.actor.turnId)
+    expect(f.turns.recordToolStart(start)).toBe(true)
+    await f.service.apply(f.id, { operationId: 'parallel', expectedRevision: 0,
+      command: { type: 'update_progress', progress: 'Reading' } }, f.actor, { toolCallId: 'parallel' })
+    expect(f.db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'check'").get()).toEqual({ status: 'running' })
+  } finally { f.close() }
+})

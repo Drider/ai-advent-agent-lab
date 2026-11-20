@@ -462,7 +462,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
   })
 
   const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext,
-    completed?: { run: ValidationRun; results: ValidationResult[] }, observation?: RecoveryObservation | TaskError): TaskCommandResult | ValidationRun => {
+    completed?: { run: ValidationRun; results: ValidationResult[] }, observation?: RecoveryObservation | TaskError, attemptId?: string): TaskCommandResult | ValidationRun => {
     const { operationId, expectedRevision, command } = envelope
     if (!operationId.trim()) return failure(new TaskError('INVALID_INPUT', 'Command requires an operation ID'))
     let inputHash: string
@@ -520,7 +520,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     } catch (error) {
       if (error instanceof ChecksRequested && task?.workflowId) {
         return validations.reserve(task, workflows.get(task.workflowId, task.workflowVersion!)!.definition,
-          error.ids, actor, operationId, inputHash, now())
+          error.ids, actor, operationId, inputHash, now(), attemptId)
       }
       if (!(error instanceof TaskError)) throw error
       return deny(operationId, actor, inputHash, error, task, task?.id ?? null)
@@ -627,28 +627,23 @@ export function createTaskService(db: Database.Database, options: TaskServiceOpt
       const type = envelope.command.type
       if (!Object.hasOwn(toolNames, type)) throw new TaskError('TRANSITION_NOT_ALLOWED', 'Command is unavailable to tools')
       const toolName = toolNames[type as keyof typeof toolNames]
+      const attemptId = randomUUID()
       const transaction = db.transaction((...args: Parameters<typeof runtime.transaction>) => {
         const finalizingValidation = args[3] !== undefined
-        if (!finalizingValidation) {
-          assertTaskExecutionAllowed(db, taskId, actor, true)
-          if (!turns.recordToolStart({ turnId: actor.turnId!, toolCallId: call.toolCallId,
-            name: toolName, input: envelope, stepIndex: actor.stepIndex ?? 0, taskId, retryFailedTaskCommand: true })) {
-            throw new TaskError('OPERATION_CONFLICT', 'Tool call already exists')
-          }
+        if (!finalizingValidation) assertTaskExecutionAllowed(db, taskId, actor, true)
+        const [id, command, context, completed, observation] = args
+        const result = runtime.transaction(id, command, context, completed, observation, attemptId)
+        // Reclaim any abandoned reservation before inserting this attempt. Both reservations commit before external reads.
+        if (!finalizingValidation && !turns.recordToolStart({ turnId: actor.turnId!, toolCallId: call.toolCallId,
+          name: toolName, input: envelope, stepIndex: actor.stepIndex ?? 0, taskId, retryFailedTaskCommand: true, attemptId })) {
+          throw new TaskError('OPERATION_CONFLICT', 'Tool call already exists')
         }
-        const result = runtime.transaction(...args)
-        if ('ok' in result) turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, output: result })
+        if ('ok' in result) turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, attemptId, output: result })
         return result
       })
-      return executeTaskCommand({ ...runtime, transaction: transaction.immediate }, taskId, envelope, actor, (error, run) => {
-        const message = error instanceof Error ? error.message : String(error)
-        try {
-          turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, error: message })
-        } catch {
-          // A temporary receipt-table failure can outlast the failed commit. Keep the exact call recoverable in-process.
-          db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.failedToolCallId', ?, '$.toolError', ?)
-            WHERE id = ? AND type = 'validation_requested'`).run(call.toolCallId, message, run.token)
-        }
+      return executeTaskCommand({ ...runtime, transaction: transaction.immediate }, taskId, envelope, actor, error => {
+        turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, attemptId,
+          error: error instanceof Error ? error.message : String(error) })
       })
     }
     if (envelope.command.type === 'resolve_recovery') {

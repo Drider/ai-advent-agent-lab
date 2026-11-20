@@ -239,7 +239,7 @@ it('binds validation to immutable versions and reruns all completion checks desp
   expect(await complete('again')).toMatchObject({ ok: true, task: { status: 'done' } })
 })
 
-it.each([['original-call', false], ['new-call', false], ['original-call', true], ['new-call', true]] as const)(
+it.each([['original-call', false], ['new-call', false], ['original-call', true], ['new-call', true], ['continue', true]] as const)(
   'recovers validation in-process using %s after failure to record its error=%s', async (toolCallId, receiptUnavailable) => {
   const task = fileTask()
   const snapshot = await task.ok(material('code', { path: 'report', text: 'saved' }))
@@ -252,15 +252,34 @@ it.each([['original-call', false], ['new-call', false], ['original-call', true],
   const read = vi.fn(async () => 'saved')
   const service = createTaskService(db, { readTextFile: read })
   db.exec("CREATE TRIGGER fail_check BEFORE INSERT ON task_validations BEGIN SELECT RAISE(ABORT, 'commit failed'); END")
-  if (receiptUnavailable) db.exec("CREATE TRIGGER fail_record BEFORE UPDATE ON tool_executions BEGIN SELECT RAISE(ABORT, 'record failed'); END")
+  if (receiptUnavailable) db.exec(`
+    CREATE TRIGGER fail_record BEFORE UPDATE ON tool_executions BEGIN SELECT RAISE(ABORT, 'record failed'); END;
+    CREATE TRIGGER fail_marker BEFORE UPDATE ON task_events BEGIN SELECT RAISE(ABORT, 'marker and lease unavailable'); END;
+  `)
   await expect(service.apply(task.id, envelope, actor, { toolCallId: 'original-call' })).rejects.toThrow('commit failed')
-  if (receiptUnavailable) db.exec('DROP TRIGGER fail_record')
+  if (receiptUnavailable) db.exec('DROP TRIGGER fail_record; DROP TRIGGER fail_marker')
   if (!receiptUnavailable) expect(db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'original-call'").get()).toEqual({ status: 'failed' })
   expect(task.view().validations).toEqual([])
   db.exec('DROP TRIGGER fail_check')
+  if (toolCallId === 'continue') {
+    turns.markStopped(turnId)
+    expect(turns.assessContinuation(turnId)).toBe('safe')
+    expect(db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'original-call'").get()).toEqual({ status: 'failed' })
+    expect(read).toHaveBeenCalledTimes(1)
+    return
+  }
   await expect(service.apply(task.id, { ...envelope, operationId: 'different' }, actor, { toolCallId: 'original-call' }))
     .rejects.toMatchObject({ code: 'OPERATION_CONFLICT' })
-  const result = await service.apply(task.id, envelope, actor, { toolCallId })
+  let release!: (text: string) => void
+  read.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+  const retry = service.apply(task.id, envelope, actor, { toolCallId })
+  try {
+    const concurrent = await service.apply(task.id, { operationId: 'other', expectedRevision: 999,
+      command: { type: 'update_progress', progress: 'Parallel note' } }, actor, { toolCallId: 'other' })
+    expect(concurrent).toMatchObject({ ok: false, error: { code: 'STALE_TASK_REVISION' } })
+    expect(db.prepare('SELECT status FROM tool_executions WHERE tool_call_id = ?').get(toolCallId)).toEqual({ status: 'running' })
+  } finally { release?.('saved') }
+  const result = await retry
   expect(result.ok).toBe(true)
   expect(await service.apply(task.id, envelope, actor, { toolCallId: 'replay' })).toEqual(result)
   expect(task.view().validations).toHaveLength(1)
@@ -281,5 +300,35 @@ it('distinguishes an empty session aggregate from failure to load all requested 
     const { ok: _ok, ...legacyOutput } = toolResults[0]!.output
     const oldReceipt: ToolReceipt = { ...toolResults[0]!, output: legacyOutput, input: paths ? { paths: [...paths] } : {} }
     expect((await evaluateCheck(check, [item('report', {})], { ...context, toolResults: [oldReceipt] })).outcome).toBe(expected)
+  }
+})
+
+it('fences the receipt of an expired checker when the same call ID is already running again', async () => {
+  const task = fileTask()
+  const snapshot = await task.ok(material('code', { path: 'report', text: 'saved' }))
+  const turns = createTurnRepository(db)
+  const { turnId } = turns.beginUserTurn({ requestId: 'late-check', sessionId: task.sessionId, modelId: 'test',
+    message: { id: 'm', role: 'user', parts: [] }, agentConfig: {} })
+  db.prepare('UPDATE turns SET task_id = ? WHERE id = ?').run(task.id, turnId)
+  const reads: Array<(text: string) => void> = []
+  const service = createTaskService(db, { readTextFile: () => new Promise(resolve => reads.push(resolve)) })
+  const invoke = () => service.apply(task.id, { command: { type: 'validate' }, operationId: 'check',
+    expectedRevision: snapshot.revision }, { role: 'agent', sessionId: task.sessionId, turnId,
+    stepNodeVisitId: snapshot.nodeVisitId }, { toolCallId: 'call' })
+  const old = invoke()
+  db.exec("UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0) WHERE type = 'validation_requested'")
+  const replacement = invoke()
+  try {
+    expect(reads).toHaveLength(2)
+    reads[0]!('old')
+    await expect(old).resolves.toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } })
+    expect(db.prepare("SELECT status, output_json FROM tool_executions WHERE tool_call_id = 'call'").get())
+      .toEqual({ status: 'running', output_json: null })
+    reads[1]!('saved')
+    await expect(replacement).resolves.toMatchObject({ ok: true })
+    expect(task.view().validations).toMatchObject([{ outcome: 'passed' }])
+  } finally {
+    for (const release of reads) release('saved')
+    await Promise.allSettled([old, replacement])
   }
 })
