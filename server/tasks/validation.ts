@@ -64,7 +64,7 @@ export function createValidationStore(db: Database.Database) {
   function reclaim(operationId: string) {
     const owner = request.get(operationId)
     if (!owner || !validationAbandoned(owner.token, owner.worker, owner.leaseUntil)) return false
-    if (owner.turnId) reconcileValidationReceipts(db, owner.turnId, owner.token)
+    if (owner.turnId) reconcileValidationReceipts(db, owner.turnId, { reservationId: owner.token })
     db.prepare("DELETE FROM task_commands WHERE operation_id = ? AND phase = 'running'").run(operationId)
     return true
   }

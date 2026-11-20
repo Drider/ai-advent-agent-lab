@@ -304,18 +304,17 @@ export function createTurnRepository(db: Database.Database) {
         WHERE t.task_id = ? AND e.tool_call_id = ? AND t.id <> ? LIMIT 1`).get(turn.task_id, input.toolCallId, input.turnId)) {
         throw new TurnRepositoryError('OPERATION_CONFLICT', 'Tool call ID already belongs to another turn of this task')
       }
-      if (input.retryFailedTaskCommand) reconcileValidationReceipts(db, input.turnId)
       const existing = db.prepare<[string, string], {
-        status: string; task_id: string | null; task_operation_id: string | null; tool_name: string; input_json: string
-      }>('SELECT status, task_id, task_operation_id, tool_name, input_json FROM tool_executions WHERE turn_id = ? AND tool_call_id = ?')
+        id: string; status: string; task_id: string | null; task_operation_id: string | null; tool_name: string; input_json: string
+      }>('SELECT id, status, task_id, task_operation_id, tool_name, input_json FROM tool_executions WHERE turn_id = ? AND tool_call_id = ?')
         .get(input.turnId, input.toolCallId)
       if (existing) {
-        if (!input.retryFailedTaskCommand || !input.taskId || existing.status !== 'failed' || existing.task_id !== input.taskId
+        if (!input.retryFailedTaskCommand || !input.taskId || existing.status === 'completed' || existing.task_id !== input.taskId
           || existing.task_operation_id !== null || existing.tool_name !== input.name
           || !isDeepStrictEqual(JSON.parse(existing.input_json), input.input)) return false
-        db.prepare(`UPDATE tool_executions SET id = ?, status = 'running', error_json = NULL, output_json = NULL, updated_at = ?
-          WHERE turn_id = ? AND tool_call_id = ?`).run(input.attemptId ?? randomUUID(), now(), input.turnId, input.toolCallId)
-        return true
+        reconcileValidationReceipts(db, input.turnId, { executionId: existing.id })
+        return db.prepare(`UPDATE tool_executions SET id = ?, status = 'running', error_json = NULL, output_json = NULL, updated_at = ?
+          WHERE id = ? AND status = 'failed'`).run(input.attemptId ?? randomUUID(), now(), existing.id).changes === 1
       }
       const timestamp = now()
       db.prepare(`

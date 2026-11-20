@@ -146,7 +146,7 @@ it('reclaims an expired reservation and fences an old worker while its replaceme
   const run = () => service.apply(task.id, { command: { type: 'validate' }, operationId: 'lease', expectedRevision: snapshot.revision },
     { role: 'agent', sessionId: task.sessionId })
   const old = run()
-  db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0, '$.thread', -1)
+  db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0, '$.worker', 'retired-worker')
     WHERE type = 'validation_requested' AND operation_id = 'lease'`).run()
   const replacement = run()
   try {
@@ -316,7 +316,7 @@ it('fences the receipt of an expired checker when the same call ID is already ru
     expectedRevision: snapshot.revision }, { role: 'agent', sessionId: task.sessionId, turnId,
     stepNodeVisitId: snapshot.nodeVisitId }, { toolCallId: 'call' })
   const old = invoke()
-  db.exec("UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0) WHERE type = 'validation_requested'")
+  db.exec("UPDATE task_events SET details_json = json_set(details_json, '$.leaseUntil', 0, '$.worker', 'retired-worker') WHERE type = 'validation_requested'")
   const replacement = invoke()
   try {
     expect(reads).toHaveLength(2)
@@ -330,5 +330,50 @@ it('fences the receipt of an expired checker when the same call ID is already ru
   } finally {
     for (const release of reads) release('saved')
     await Promise.allSettled([old, replacement])
+  }
+})
+
+it.each(['local', 'remote'])('preserves a live %s checker across missed renewals and an unrelated rejected command', async owner => {
+  vi.useFakeTimers()
+  const task = fileTask()
+  const snapshot = await task.ok(material('code', { path: 'report', text: 'saved' }))
+  const turns = createTurnRepository(db)
+  const { turnId } = turns.beginUserTurn({ requestId: 'long-turn', sessionId: task.sessionId, modelId: 'test',
+    message: { id: 'message', role: 'user', parts: [] }, agentConfig: {} })
+  db.prepare('UPDATE turns SET task_id = ? WHERE id = ?').run(task.id, turnId)
+  const actor = { role: 'agent' as const, sessionId: task.sessionId, turnId, stepNodeVisitId: snapshot.nodeVisitId }
+  let release!: (value: string) => void
+  const read = vi.fn(async () => 'unexpected extra read')
+    .mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+  const service = createTaskService(db, { readTextFile: read })
+  const envelope = { command: { type: 'validate' as const }, operationId: 'check', expectedRevision: snapshot.revision }
+  const pending = service.apply(task.id, envelope, actor, { toolCallId: 'live' })
+  try {
+    if (owner === 'remote') db.exec("UPDATE task_events SET details_json = json_set(details_json, '$.worker', 'another-worker') WHERE type = 'validation_requested'")
+    const expiry = () => db.prepare<[], { expiry: number }>(
+      "SELECT json_extract(details_json, '$.leaseUntil') AS expiry FROM task_events WHERE type = 'validation_requested'",
+    ).get()!.expiry
+    db.exec("CREATE TRIGGER missed_renewal BEFORE UPDATE ON task_events BEGIN SELECT RAISE(ABORT, 'temporarily unavailable'); END")
+    await vi.advanceTimersByTimeAsync(expiry() - Date.now() + 1)
+    expect(expiry()).toBeLessThan(Date.now())
+    db.exec('DROP TRIGGER missed_renewal')
+    const unrelated = await service.apply(task.id, { command: { type: 'update_progress', progress: 'Stale note' },
+      expectedRevision: snapshot.revision - 1, operationId: 'other' }, actor, { toolCallId: 'other-call' })
+    expect(unrelated).toMatchObject({ ok: false, error: { code: 'STALE_TASK_REVISION' } })
+    expect(db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'live'").get()).toEqual({ status: 'running' })
+    if (owner === 'local') {
+      const duplicate = await service.apply(task.id, envelope, actor, { toolCallId: 'duplicate' })
+      expect(duplicate).toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' } })
+      await expect(service.apply(task.id, envelope, actor, { toolCallId: 'live' })).rejects.toMatchObject({ code: 'OPERATION_CONFLICT' })
+    }
+    expect(task.view().task?.revision).toBe(snapshot.revision)
+    release('saved')
+    expect(await pending).toMatchObject({ ok: true, task: { revision: snapshot.revision + 1 } })
+    expect(task.view().validations).toMatchObject([{ outcome: 'passed', inputs: snapshot.artifacts }])
+    expect(read).toHaveBeenCalledTimes(1)
+  } finally {
+    release('saved')
+    await pending
+    vi.useRealTimers()
   }
 })
