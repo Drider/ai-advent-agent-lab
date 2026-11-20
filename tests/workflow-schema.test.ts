@@ -104,6 +104,13 @@ describe('workflow schema', () => {
     expect(parseWorkflowSource(encoded, 'json')).toEqual(fixture)
   })
 
+  it('requires check options', () => {
+    const invalid = structuredClone(fixture)
+    Reflect.deleteProperty(invalid.checks[0]!, 'options')
+    rejectsAt(() => validateWorkflowDefinition(invalid), '$.checks[0].options')
+    rejectsAt(() => parseWorkflowSource(JSON.stringify(invalid), 'json'), '$.checks[0].options')
+  })
+
   it('rejects additional properties in JSON arrays passed directly', () => {
     const invalid = structuredClone(fixture)
     invalid.checks[0]!.options = Object.assign([], { extra: true })

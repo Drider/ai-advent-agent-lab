@@ -89,8 +89,8 @@ const checkSchema = z.strictObject({
   id,
   kind: z.enum(['fields', 'sections', 'tool_success', 'file_matches', 'numeric']),
   artifactKeys: ids,
-  // The JSON pass validates options before the workflow shape is checked.
-  options: z.custom<JsonValue>(),
+  // The JSON pass validates the contents. Require the options field here.
+  options: z.custom<JsonValue>(value => value !== undefined, 'Expected check options'),
 })
 
 const workflowSchema = z.strictObject({
