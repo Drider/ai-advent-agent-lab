@@ -95,3 +95,50 @@ it('rejects a session tool carrying an earlier visit even when the next node als
   expect(db.prepare("SELECT id FROM task_tool_operations WHERE task_id=?").all(f.id)).toEqual([])
   db.close()
 })
+
+it('persists task-aware streamed text while the model step is still open', async () => {
+  const db = openChatDatabase(':memory:')
+  const f = fixture(db, true)
+  const message: UIMessage = { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: 'Write the report' }] }
+  const start = startTaskAwareTurn(db, { modelId: 'mock', agentConfig: {}, request: {
+    sessionId: f.sessionId, requestId: randomUUID(), kind: 'message', message,
+  } })
+  const runtime = createTaskRuntime({ db, sessionId: f.sessionId, turnId: start.turnId, taskId: f.id })
+  const delta = 'First paragraph is visible'
+  let finishStep!: () => void
+  const stream = new ReadableStream<import('@ai-sdk/provider').LanguageModelV3StreamPart>({
+    start(controller) {
+      controller.enqueue({ type: 'stream-start', warnings: [] })
+      controller.enqueue({ type: 'text-start', id: 'text' })
+      controller.enqueue({ type: 'text-delta', id: 'text', delta })
+      finishStep = () => {
+        controller.enqueue({ type: 'text-end', id: 'text' })
+        controller.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 1, text: 1, reasoning: undefined },
+        } })
+        controller.close()
+      }
+    },
+  })
+  const response = await streamChatAgent({ model: new MockLanguageModelV3({ doStream: { stream } }), modelId: 'mock',
+    messages: [message], runId: '2099-11-11T12:00:00.000Z', sessionId: f.sessionId, turnId: start.turnId,
+    turnRepository: createTurnRepository(db), taskRuntime: runtime, logLevel: 'off' })
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader()
+  try {
+    let visible = ''
+    while (!visible.includes(delta)) {
+      const chunk = await reader.read()
+      if (chunk.done) throw new Error('Stream ended before the first paragraph')
+      visible += chunk.value
+    }
+    const saved = db.prepare<[string], { status: string; text: string }>(
+      "SELECT status, json_extract(payload_json, '$.parts[0].text') AS text FROM messages WHERE turn_id=? AND role='assistant'",
+    ).get(start.turnId)
+    expect(saved).toEqual({ status: 'partial', text: delta })
+  } finally {
+    finishStep()
+    while (!(await reader.read()).done) { /* drain the remaining step and completion events */ }
+    db.close()
+  }
+})

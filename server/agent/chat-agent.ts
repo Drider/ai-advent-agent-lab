@@ -362,7 +362,7 @@ export async function streamChatAgent(input: {
       if (chunk.type === 'text-delta') {
         partialText += chunk.text
         const timestamp = Date.now()
-        if (durableOptions && partialText && timestamp - lastPartialSaveAt >= 1_000) {
+        if (persisted && partialText && timestamp - lastPartialSaveAt >= 1_000) {
           lastPartialSaveAt = timestamp
           await persistAssistantSnapshot({
             id: assistantMessageId,
