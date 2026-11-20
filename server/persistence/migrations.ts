@@ -473,6 +473,10 @@ export function migrateChatDatabase(db: Database.Database): void {
           ON tasks (session_id) WHERE status IN ('active', 'paused');
         CREATE INDEX tasks_session_created_idx ON tasks (session_id, created_at DESC, id DESC);
 
+        CREATE TRIGGER tasks_owner_immutable
+        BEFORE UPDATE OF session_id ON tasks WHEN OLD.session_id <> NEW.session_id
+        BEGIN SELECT RAISE(ABORT, 'a task cannot move to another dialogue'); END;
+
         CREATE TABLE task_artifacts (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -539,6 +543,7 @@ export function migrateChatDatabase(db: Database.Database): void {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           CHECK ((phase = 'running') = (receipt_json IS NULL)),
+          UNIQUE (session_id, operation_id),
           FOREIGN KEY (session_id, task_id) REFERENCES tasks(session_id, id) ON DELETE CASCADE
         ) STRICT;
         CREATE INDEX task_commands_session_task_idx ON task_commands (session_id, task_id);
@@ -547,7 +552,7 @@ export function migrateChatDatabase(db: Database.Database): void {
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
           task_id TEXT,
-          operation_id TEXT REFERENCES task_commands(operation_id) ON DELETE CASCADE,
+          operation_id TEXT,
           source_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
           source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
           actor TEXT NOT NULL CHECK (actor IN ('user', 'agent', 'system')),
@@ -556,7 +561,8 @@ export function migrateChatDatabase(db: Database.Database): void {
           revision INTEGER CHECK (revision >= 0),
           details_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json)),
           created_at TEXT NOT NULL,
-          FOREIGN KEY (session_id, task_id) REFERENCES tasks(session_id, id) ON DELETE CASCADE
+          FOREIGN KEY (session_id, task_id) REFERENCES tasks(session_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (session_id, operation_id) REFERENCES task_commands(session_id, operation_id) ON DELETE CASCADE
         ) STRICT;
         CREATE INDEX task_events_session_task_idx ON task_events (session_id, task_id, created_at);
 
@@ -579,15 +585,60 @@ export function migrateChatDatabase(db: Database.Database): void {
         CREATE UNIQUE INDEX task_tool_operations_action_idx
           ON task_tool_operations (task_id, COALESCE(node_visit_id, ''), action_key);
 
+        CREATE TRIGGER task_tool_operations_owner_immutable
+        BEFORE UPDATE OF task_id ON task_tool_operations WHEN OLD.task_id <> NEW.task_id
+        BEGIN SELECT RAISE(ABORT, 'a tool operation cannot move to another task'); END;
+
         ALTER TABLE user_profiles ADD COLUMN default_workflow_id TEXT REFERENCES workflows(id) ON DELETE SET NULL;
       `)
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get()) {
+      const hasTurns = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get()
+      const hasToolExecutions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_executions'").get()
+      if (hasTurns) {
         db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL')
+        for (const [event, action] of [['insert', 'INSERT'], ['update', 'UPDATE OF session_id, task_id']]) {
+          db.exec(`
+            CREATE TRIGGER turns_task_owner_${event}
+            BEFORE ${action} ON turns
+            WHEN EXISTS (SELECT 1 FROM tasks WHERE id = NEW.task_id AND session_id <> NEW.session_id)
+            BEGIN SELECT RAISE(ABORT, 'turn and task must belong to the same dialogue'); END;
+          `)
+        }
       }
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_executions'").get()) {
+      if (hasToolExecutions) {
         db.exec(`
           ALTER TABLE tool_executions ADD COLUMN task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL;
           ALTER TABLE tool_executions ADD COLUMN task_operation_id TEXT REFERENCES task_tool_operations(id) ON DELETE SET NULL;
+        `)
+      }
+      if (hasTurns && hasToolExecutions) {
+        for (const [event, action] of [['insert', 'INSERT'], ['update', 'UPDATE OF turn_id, task_id, task_operation_id']]) {
+          db.exec(`
+            CREATE TRIGGER tool_executions_task_owner_${event}
+            BEFORE ${action} ON tool_executions
+            WHEN EXISTS (
+              SELECT 1 FROM turns AS turn
+              LEFT JOIN tasks AS execution_task ON execution_task.id = NEW.task_id
+              LEFT JOIN task_tool_operations AS operation ON operation.id = NEW.task_operation_id
+              LEFT JOIN tasks AS operation_task ON operation_task.id = operation.task_id
+              WHERE turn.id = NEW.turn_id AND (
+                execution_task.session_id <> turn.session_id OR operation_task.session_id <> turn.session_id
+                OR execution_task.id <> operation_task.id
+                OR turn.task_id <> execution_task.id OR turn.task_id <> operation_task.id
+              )
+            )
+            BEGIN SELECT RAISE(ABORT, 'tool execution links must agree on task ownership'); END;
+          `)
+        }
+        db.exec(`
+          CREATE TRIGGER turns_tool_execution_owner_update
+          BEFORE UPDATE OF session_id, task_id ON turns
+          WHEN EXISTS (
+            SELECT 1 FROM tool_executions AS execution
+            LEFT JOIN task_tool_operations AS operation ON operation.id = execution.task_operation_id
+            JOIN tasks AS task ON task.id = COALESCE(execution.task_id, operation.task_id)
+            WHERE execution.turn_id = OLD.id AND (task.session_id <> NEW.session_id OR task.id <> NEW.task_id)
+          )
+          BEGIN SELECT RAISE(ABORT, 'turn must agree with its tool executions on task ownership'); END;
         `)
       }
     }

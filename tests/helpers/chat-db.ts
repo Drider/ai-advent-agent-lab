@@ -4,6 +4,13 @@ export function removeTaskSchema(db: Database.Database): void {
   const foreignKeys = db.pragma('foreign_keys', { simple: true })
   db.pragma('foreign_keys = OFF')
   try {
+    db.exec(`
+      DROP TRIGGER IF EXISTS turns_task_owner_insert;
+      DROP TRIGGER IF EXISTS turns_task_owner_update;
+      DROP TRIGGER IF EXISTS turns_tool_execution_owner_update;
+      DROP TRIGGER IF EXISTS tool_executions_task_owner_insert;
+      DROP TRIGGER IF EXISTS tool_executions_task_owner_update;
+    `)
     for (const [table, columns] of [
       ['turns', ['task_id']],
       ['tool_executions', ['task_id', 'task_operation_id']],
