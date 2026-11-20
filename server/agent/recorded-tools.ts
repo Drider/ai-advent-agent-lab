@@ -27,11 +27,16 @@ export function recordToolExecution<TInput, TOutput, TContext = unknown>(
   originalTool: Tool<TInput, TOutput, TContext>,
   options: {
     turnId: string
+    toolName?: string
+  } & ({
+    task: { db: Database.Database; taskId: string; getActor: (context?: unknown) => TaskActorContext }
+    getStepIndex?: () => number
+    repository?: RecordedToolRepository
+  } | {
+    task?: undefined
     getStepIndex: () => number
     repository: RecordedToolRepository
-    toolName?: string
-    task?: { db: Database.Database; taskId: string; getActor: () => TaskActorContext }
-  },
+  }),
 ): Tool<TInput, TOutput, TContext> {
   if (!originalTool.execute) {
     throw new Error('durable tool execution requires a tool with execute')
@@ -53,7 +58,7 @@ export function recordToolExecution<TInput, TOutput, TContext = unknown>(
       ...originalTool,
       inputSchema,
       execute: async (raw: TInput, executionOptions: ToolExecutionOptions<TContext>) => {
-        const actor = getActor()
+        const actor = getActor(executionOptions.context)
         const { toolCallId } = executionOptions
         const { actionKey, ...args } = (raw ?? {}) as Record<string, unknown>
         if (mutating && (typeof actionKey !== 'string' || !actionKeyPattern.test(actionKey))) {

@@ -455,6 +455,7 @@ export function createTurnRepository(db: Database.Database) {
   return {
     beginUserTurn,
     beginContinuation,
+    assertCanStart,
     assessContinuation,
     attachStream(turnId: string, controller: AbortController) {
       const streams = activeStreams.get(db) ?? new Map<string, AbortController>()

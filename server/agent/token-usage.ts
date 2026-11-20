@@ -1,7 +1,7 @@
 import type { LanguageModelUsage } from 'ai'
 import type { ChatTokenUsage } from '../../shared/chat'
 
-type StepWithUsage = { usage?: LanguageModelUsage }
+type StepWithUsage = { usage?: LanguageModelUsage; taskRevision?: number; taskContextHash?: string }
 
 function reportedTokenCount(raw: LanguageModelUsage['raw'], group: string, field: string): number | undefined {
   const details = raw?.[group]
@@ -64,7 +64,7 @@ export function sumUsage(steps: StepWithUsage[]): LanguageModelUsage | undefined
 
 export function summarizeTokenUsage(steps: StepWithUsage[], totalUsage: LanguageModelUsage | undefined): {
   usage: ChatTokenUsage
-  steps: Array<{ usage: LanguageModelUsage }>
+  steps: Array<StepWithUsage & { usage: LanguageModelUsage }>
 } {
   const details = sumUsage(steps)
   return {
@@ -73,6 +73,7 @@ export function summarizeTokenUsage(steps: StepWithUsage[], totalUsage: Language
       inputTokenDetails: details?.inputTokenDetails,
       outputTokenDetails: details?.outputTokenDetails,
     },
-    steps: steps.map(step => ({ usage: getTokenUsage(step.usage) })),
+    steps: steps.map(step => ({ usage: getTokenUsage(step.usage), ...(step.taskRevision === undefined ? {} :
+      { taskRevision: step.taskRevision, taskContextHash: step.taskContextHash }) })),
   }
 }

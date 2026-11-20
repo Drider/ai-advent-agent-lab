@@ -175,6 +175,8 @@ function projectStep(step: unknown): unknown {
 
   const projected = {
     ...(typeof step.stepNumber === 'number' ? { stepNumber: step.stepNumber } : {}),
+    ...(typeof step.taskRevision === 'number' ? { taskRevision: step.taskRevision } : {}),
+    ...(typeof step.taskContextHash === 'string' ? { taskContextHash: step.taskContextHash } : {}),
     ...(typeof step.text === 'string' ? { text: step.text } : {}),
     ...(step.model === undefined ? {} : { model: step.model }),
     ...(step.toolCalls === undefined ? {} : { toolCalls: step.toolCalls }),

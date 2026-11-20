@@ -21,6 +21,9 @@ import { createUserProfileTools, type UserProfileTools } from '../tools/user-pro
 import { recordToolExecution } from './recorded-tools'
 import { sumUsage, summarizeTokenUsage } from './token-usage'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
+import { createTaskTools } from '../tools/tasks'
+import type { TaskRuntime } from '../tasks/turn-runtime'
+import { workingTool } from '../tasks/tool-registry'
 import type { createTurnRepository } from '../persistence/turn-repository'
 import { assertStepWithinBudget } from '../context-compaction/step-guard'
 import type { UserProfileSnapshot } from '../../shared/user-profile'
@@ -99,6 +102,8 @@ export function createChatAgent(
     contextWindowTokens?: number
     promptOverheadTokens?: number
     profileSnapshot?: UserProfileSnapshot
+    taskRuntime?: TaskRuntime
+    onPreparedStep?: (index: number, state?: { revision: number; contextHash: string }) => void
     onError?: (event: { error: unknown }) => void
     onAbort?: (event: { reason?: unknown }) => void
   } = {},
@@ -109,31 +114,40 @@ export function createChatAgent(
   modelConfigurationTools: ModelConfigurationTools = createModelConfigurationTools(),
   userProfileTools: UserProfileTools = createUserProfileTools(),
 ): ToolLoopAgent<never, { rollDie: typeof diceTool; listSavedRolls: typeof savedRollsTool } & FileTools & SessionTools & { save_memory: SaveMemoryTool } & ModelConfigurationTools & UserProfileTools> {
+  const baseInstructions = buildAgentInstructions(options.profileSnapshot, options.disableMutatingTools)
+  const runtime = options.taskRuntime
+  const working = { rollDie: diceTool, listSavedRolls: savedRollsTool, ...fileTools, save_memory: saveMemoryTool,
+    ...modelConfigurationTools, ...userProfileTools, ...sessionTools }
+  const tools = { ...working }
+  if (runtime) {
+    for (const [name, original] of Object.entries(working)) {
+      const wrapped = recordToolExecution(original as Tool<unknown, unknown>, {
+        toolName: name, turnId: runtime.turnId,
+        task: { db: runtime.db, taskId: runtime.taskId, getActor: runtime.getActor },
+      })
+      Object.assign(tools, { [name]: wrapped })
+    }
+    Object.assign(tools, createTaskTools({ ...runtime, runtime }))
+  }
   return new ToolLoopAgent({
-    model,
-    instructions: buildAgentInstructions(options.profileSnapshot, options.disableMutatingTools),
-    tools: {
-      rollDie: diceTool,
-      listSavedRolls: savedRollsTool,
-      ...fileTools,
-      save_memory: saveMemoryTool,
-      ...modelConfigurationTools,
-      ...userProfileTools,
-      ...sessionTools,
-    },
+    model, tools, instructions: baseInstructions,
     stopWhen: isStepCount(MAX_AGENT_STEPS),
-    prepareStep: ({ stepNumber, instructions, messages }) => {
+    prepareStep: ({ stepNumber, messages }) => {
+      const step = runtime?.prepareStep(stepNumber)
+      options.onPreparedStep?.(stepNumber, step)
+      const final = stepNumber === MAX_AGENT_STEPS - 1
+      const instructions = [baseInstructions, step?.instructions, final ? FINAL_STEP_INSTRUCTIONS : undefined].filter(Boolean).join('\n\n')
       assertStepWithinBudget({
         messages: messages as ModelMessage[],
         contextWindowTokens: options.contextWindowTokens,
-        promptOverheadTokens: options.promptOverheadTokens ?? 0,
+        promptOverheadTokens: step ? Math.ceil(Buffer.byteLength(instructions) / 2) + 2_000 : options.promptOverheadTokens ?? 0,
       })
-      return stepNumber === MAX_AGENT_STEPS - 1
-        ? {
-            toolChoice: 'none',
-            instructions: `${instructions ?? ''} ${FINAL_STEP_INSTRUCTIONS}`,
-          }
-        : undefined
+      if (!step) return final ? { instructions, toolChoice: 'none' } : undefined
+      const activeTools = step.activeTools.filter(name => !options.disableMutatingTools
+        || name === 'get_task_state' || workingTool(name)?.mutating === false)
+      return { instructions, activeTools: activeTools as (keyof typeof working)[],
+        toolsContext: Object.fromEntries(Object.keys(tools).map(name => [name, step.actor])),
+        ...(final ? { toolChoice: 'none' as const } : {}) }
     },
     timeout: { totalMs: AGENT_TIMEOUT_MS },
     onError: options.onError,
@@ -160,6 +174,18 @@ export function createChatAgent(
       rawChunks: options.includeRawChunks === true,
     },
   })
+}
+
+// Historical tool calls retain the schema they were recorded with. Only the
+// model input projection adapts them when switching between agent versions.
+function projectToolHistory(messages: UIMessage[], taskAware: boolean): UIMessage[] {
+  return messages.map(message => ({ ...message, parts: message.parts.map(part => {
+    if (!part.type.startsWith('tool-') || !('state' in part) || !part.state?.startsWith('output-') || !('input' in part)) return part
+    const toolName = part.type.slice(5)
+    const hasKey = !!part.input && typeof part.input === 'object' && 'actionKey' in part.input
+    if (!workingTool(toolName)?.mutating || hasKey === taskAware) return part
+    return { ...part, type: 'dynamic-tool' as const, toolName }
+  }) }))
 }
 
 function getMessageText(message: UIMessage | undefined): string {
@@ -203,6 +229,7 @@ export async function streamChatAgent(input: {
   sessionId?: string
   turnId?: string
   turnRepository?: ReturnType<typeof createTurnRepository>
+  taskRuntime?: TaskRuntime
   memoryMetadata?: TransientMemoryLog
   disableMutatingTools?: boolean
   contextWindowTokens?: number
@@ -232,6 +259,7 @@ export async function streamChatAgent(input: {
       : persistenceAbortController.signal
     : input.abortSignal
   let currentStepIndex = 0
+  let preparedStep: { revision: number; contextHash: string } | undefined
   let persistenceFailure: unknown
   let partialText = ''
   let lastPartialSaveAt = -Infinity
@@ -250,7 +278,7 @@ export async function streamChatAgent(input: {
   }
 
   const durableRepository = input.turnRepository
-  const durableOptions = persisted && durableRepository && input.turnId
+  const durableOptions = persisted && !input.taskRuntime && durableRepository && input.turnId
     ? {
         turnId: input.turnId,
         getStepIndex: () => currentStepIndex,
@@ -428,6 +456,8 @@ export async function streamChatAgent(input: {
         persistedDiceTool,
         {
           includeRawChunks: true,
+          taskRuntime: input.taskRuntime,
+          onPreparedStep: (index, step) => { currentStepIndex = index; preparedStep = step },
           disableMutatingTools: input.disableMutatingTools,
           contextWindowTokens: input.contextWindowTokens,
           promptOverheadTokens: input.promptOverheadTokens,
@@ -449,17 +479,17 @@ export async function streamChatAgent(input: {
         persistedModelConfigurationTools,
         persistedUserProfileTools,
       ),
-      uiMessages: input.messages,
+      uiMessages: projectToolHistory(input.messages, !!input.taskRuntime),
       originalMessages: persisted ? (input.originalMessages ?? input.messages) as never : undefined,
       generateMessageId: persisted ? () => assistantMessageId : undefined,
       abortSignal,
       timeout: { totalMs: AGENT_TIMEOUT_MS },
       experimental_transform: streamTransform,
       onStepEnd: (step) => {
-        if ('stepNumber' in step && typeof step.stepNumber === 'number') {
-          currentStepIndex = step.stepNumber
-        }
-        steps.push(step as unknown as { usage?: LanguageModelUsage; [key: string]: unknown })
+        if (preparedStep) {
+          steps.push({ ...step, text: step.text, toolCalls: step.toolCalls, toolResults: step.toolResults,
+            taskRevision: preparedStep.revision, taskContextHash: preparedStep.contextHash })
+        } else steps.push(step as unknown as { usage?: LanguageModelUsage; [key: string]: unknown })
       },
       onUIMessageStepEnd: async (event) => {
         if (persisted) {

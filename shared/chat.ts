@@ -7,7 +7,7 @@ export type ChatTokenUsage = Pick<LanguageModelUsage, 'inputTokens' | 'outputTok
 export interface ChatMessageMetadata {
   durationMs: number
   usage: ChatTokenUsage
-  steps?: Array<{ usage: ChatTokenUsage }>
+  steps?: Array<{ usage: ChatTokenUsage; taskRevision?: number; taskContextHash?: string }>
   stopReason?: 'step_limit'
   costRub?: ChatCostRub
 }

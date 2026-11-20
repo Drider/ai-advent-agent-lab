@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
-import { estimateInputTokens } from '../context-compaction/estimate'
+import { COMPACTION_FALLBACK_CHARACTERS } from '../context-compaction/policy'
+import { estimateMessageCharacters, estimateInputTokens } from '../context-compaction/estimate'
 import { ContextLimitError } from '../context-compaction/step-guard'
 import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-repository'
 import type { ChatRequestBody, ChatUIMessage } from '../../shared/chat'
@@ -16,10 +17,14 @@ function promptOverhead(agentConfig: Record<string, unknown>): number {
 
 function assertImmediateMemoryWindow(snapshot: MemorySnapshot, request: ChatRequestBody, agentConfig: Record<string, unknown>): void {
   const compaction = agentConfig.contextCompaction
-  if (!compaction || typeof compaction !== 'object' || !('contextWindowTokens' in compaction) || typeof compaction.contextWindowTokens !== 'number') return
+  const window = compaction && typeof compaction === 'object' && 'contextWindowTokens' in compaction
+    && typeof compaction.contextWindowTokens === 'number' ? compaction.contextWindowTokens : undefined
   const messages = [...snapshot.messages, request.message]
   const estimated = estimateInputTokens(messages, promptOverhead(agentConfig))
-  if (estimated > compaction.contextWindowTokens * 0.8) throw new ContextLimitError(estimated, compaction.contextWindowTokens)
+  const tooLarge = window === undefined
+    ? estimateMessageCharacters(messages) + promptOverhead(agentConfig) * 2 > COMPACTION_FALLBACK_CHARACTERS
+    : estimated > window * 0.8
+  if (tooLarge) throw new ContextLimitError(estimated, window)
 }
 
 export function startMemoryAwareTurn(db: Database.Database, input: {

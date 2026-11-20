@@ -28,7 +28,7 @@ export function assertStepWithinBudget(input: {
   const exceedsWindow = input.contextWindowTokens !== undefined
     && estimatedInputTokens > input.contextWindowTokens * COMPACTION_HARD_FRACTION
   const exceedsFallback = input.contextWindowTokens === undefined
-    && size.characters > COMPACTION_FALLBACK_CHARACTERS
+    && size.characters + input.promptOverheadTokens * 2 > COMPACTION_FALLBACK_CHARACTERS
   if (exceedsWindow || exceedsFallback) {
     throw new ContextLimitError(estimatedInputTokens, input.contextWindowTokens)
   }

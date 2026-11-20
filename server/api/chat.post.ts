@@ -15,7 +15,8 @@ import { createTurnRepository, TurnRepositoryError } from '../persistence/turn-r
 import { prepareSessionContext } from '../context-compaction/prepare'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import type { ChatUIMessage } from '../../shared/chat'
-import { startMemoryAwareTurn } from '../memory/start-turn'
+import { createTaskRuntime, startTaskAwareTurn, type TaskRuntime } from '../tasks/turn-runtime'
+import { TaskError } from '../tasks/errors'
 import { toMemoryHttpError } from '../memory/api-errors'
 import type { MemorySnapshot } from '../../shared/memory'
 import { estimateInputTokens } from '../context-compaction/estimate'
@@ -71,22 +72,28 @@ export default defineEventHandler(async (event) => {
     messageThreshold: contextStrategy.messageThreshold,
   }
   const model = provider.chat(chatConfig.modelId)
+  let taskRuntime: TaskRuntime | undefined
   let turnId: string
   let memorySnapshot: MemorySnapshot
   let profileSnapshot
   let agentConfig: Record<string, unknown>
   try {
-    const started = startMemoryAwareTurn(db, {
+    const started = startTaskAwareTurn(db, {
       request,
       modelId: chatConfig.modelId,
       agentConfig: getAgentConfig(compactionSettings, contextStrategy),
       createAgentConfig: profile => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue'),
     })
     turnId = started.turnId
+    if (started.taskContext) taskRuntime = createTaskRuntime({ db, sessionId: request.sessionId, turnId, taskId: started.taskContext.task.id })
     memorySnapshot = started.snapshot
     profileSnapshot = started.profileSnapshot
     agentConfig = started.agentConfig
   } catch (error) {
+    if (error instanceof TaskError) {
+      const statusCode = error.code === 'NOT_FOUND' ? 404 : error.code === 'CONTEXT_LIMIT' ? 422 : error.code === 'INVALID_INPUT' ? 400 : 409
+      throw createError({ statusCode, statusMessage: error.message, data: { code: error.code } })
+    }
     if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
       throw createError({ statusCode: 409, statusMessage: error.message })
     }
@@ -181,6 +188,7 @@ export default defineEventHandler(async (event) => {
       memoryMetadata: memorySnapshot.transientMemory,
       profileSnapshot,
       turnRepository: turns,
+      taskRuntime,
       disableMutatingTools: request.kind === 'continue',
       saveMemoryTool: createSaveMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
       modelConfigurationTools: createModelConfigurationTools({ db }),

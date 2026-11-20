@@ -30,6 +30,8 @@ const registry = {
   select_user_profile: { mutating: true, success: 'selected' },
 } satisfies Record<WorkingToolName, { mutating: boolean; success: string }>
 
+export const workingToolNames: readonly string[] = Object.keys(registry)
+
 export function workingTool(name: string) {
   return Object.hasOwn(registry, name) ? registry[name as WorkingToolName] : undefined
 }

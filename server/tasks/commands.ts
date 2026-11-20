@@ -588,7 +588,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       if (source.task_id === null) return null
       const continued = getOwned(source.task_id, sessionId)
       if (!continued) reject('NOT_FOUND', 'Task was not found')
-      requireActive(continued)
+      if (continued.status !== 'done') requireActive(continued)
       return continued
     }
 

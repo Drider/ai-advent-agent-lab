@@ -52,7 +52,7 @@ function hardBudgetExceeded(
   if (settings.contextWindowTokens !== undefined) {
     return estimateInputTokens(modelMessages, promptOverheadTokens) > settings.contextWindowTokens * COMPACTION_HARD_FRACTION
   }
-  return estimateMessageCharacters(modelMessages) > COMPACTION_FALLBACK_CHARACTERS
+  return estimateMessageCharacters(modelMessages) + promptOverheadTokens * 2 > COMPACTION_FALLBACK_CHARACTERS
 }
 
 function chooseTail(messages: StoredContextMessage[]): { toSummarize: StoredContextMessage[]; tail: StoredContextMessage[] } | null {
@@ -79,7 +79,7 @@ export function decideCompaction(input: {
   const existingSummary = input.checkpoint?.summary
   const modelMessages = [...summaryMessage(existingSummary), ...asModelMessages(unsummarized)]
   const estimatedBeforeTokens = estimateInputTokens(modelMessages, input.promptOverheadTokens)
-  const estimatedBeforeCharacters = estimateMessageCharacters(modelMessages)
+  const estimatedBeforeCharacters = estimateMessageCharacters(modelMessages) + input.promptOverheadTokens * 2
   const windowTrigger = input.settings.contextWindowTokens !== undefined
     && estimatedBeforeTokens >= input.settings.contextWindowTokens * COMPACTION_TRIGGER_FRACTION
   const messageTrigger = unsummarized.length >= input.settings.messageThreshold
@@ -106,7 +106,7 @@ export function decideCompaction(input: {
 
   const compactedMessages = [...summaryMessage('summary placeholder'), ...asModelMessages(selected.tail)]
   const estimatedAfterTokens = estimateInputTokens(compactedMessages, input.promptOverheadTokens)
-  const estimatedAfterCharacters = estimateMessageCharacters(compactedMessages)
+  const estimatedAfterCharacters = estimateMessageCharacters(compactedMessages) + input.promptOverheadTokens * 2
   const tailOverflow = input.settings.contextWindowTokens !== undefined
     ? estimatedAfterTokens > input.settings.contextWindowTokens * COMPACTION_HARD_FRACTION
     : estimatedAfterCharacters > COMPACTION_FALLBACK_CHARACTERS

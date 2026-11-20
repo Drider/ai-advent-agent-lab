@@ -10,7 +10,7 @@ export function classifyAgentStopReason(error: unknown): ChatStopReason {
   const rawMessage = typeof metadata?.raw === 'string' ? metadata.raw : ''
 
   if (code === 'INSUFFICIENT_BALANCE') return 'provider_spending_limit'
-  if (code === 'context_length_exceeded' || /(?:maximum context length|context window|too many tokens)/iu.test(`${message} ${rawMessage}`)) return 'context_limit'
+  if (code === 'CONTEXT_LIMIT' || code === 'context_length_exceeded' || /(?:maximum context length|context window|too many tokens)/iu.test(`${message} ${rawMessage}`)) return 'context_limit'
   if (name === 'TimeoutError' || /(?:timed? out|timeout)/iu.test(message)) return 'timeout'
   if (name === 'AI_InvalidPromptError' || /System messages are not allowed in the prompt or messages fields/u.test(message)) return 'invalid_prompt'
   if (/^agent stopped after \d+ steps$/u.test(message)) return 'step_limit'
