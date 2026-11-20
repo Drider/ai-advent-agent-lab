@@ -41,7 +41,7 @@ it('rejects requests and actor sessions belonging to a different task', async ()
   const second = fixture(db)
   const otherId = await second.review()
   await first.review()
-  await first.denied({ type: 'approve', approvalId: otherId }, 'PLAN_APPROVAL_REQUIRED', 'user')
+  await first.denied({ type: 'approve', approvalId: otherId }, 'NOT_FOUND', 'user')
   const before = first.view()
   expect(await first.service.apply(first.id, { operationId: 'foreign', expectedRevision: before.task!.revision,
     command: { type: 'approve', approvalId: otherId } }, { sessionId: second.sessionId, role: 'user' }))

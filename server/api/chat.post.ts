@@ -17,6 +17,7 @@ import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import type { ChatUIMessage } from '../../shared/chat'
 import { createTaskRuntime, startTaskAwareTurn, type TaskRuntime } from '../tasks/turn-runtime'
 import { TaskError } from '../tasks/errors'
+import { taskHttpError } from '../tasks/api-errors'
 import { toMemoryHttpError } from '../memory/api-errors'
 import type { MemorySnapshot } from '../../shared/memory'
 import { estimateInputTokens } from '../context-compaction/estimate'
@@ -90,10 +91,7 @@ export default defineEventHandler(async (event) => {
     profileSnapshot = started.profileSnapshot
     agentConfig = started.agentConfig
   } catch (error) {
-    if (error instanceof TaskError) {
-      const statusCode = error.code === 'NOT_FOUND' ? 404 : error.code === 'CONTEXT_LIMIT' ? 422 : error.code === 'INVALID_INPUT' ? 400 : 409
-      throw createError({ statusCode, statusMessage: error.message, data: { code: error.code } })
-    }
+    if (error instanceof TaskError) throw taskHttpError(error)
     if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
       throw createError({ statusCode: 409, statusMessage: error.message })
     }

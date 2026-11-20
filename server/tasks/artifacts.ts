@@ -88,6 +88,12 @@ export function createArtifactStore(db: Database.Database) {
 
   return {
     afterActivation, receipts, producingVisit,
+    byId(taskId: string, id: string, sessionId: string): TaskArtifact | null {
+      const row = db.prepare<[string, string, string], ArtifactRow>(`SELECT ${columns} FROM task_artifacts
+        WHERE task_id = ? AND id = ? AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = task_artifacts.task_id AND session_id = ?)`)
+        .get(taskId, id, sessionId)
+      return row ? artifact(row) : null
+    },
     latest(taskId: string, key: string): TaskArtifact | null {
       const row = byKey.get(taskId, key)
       return row ? artifact(row) : null

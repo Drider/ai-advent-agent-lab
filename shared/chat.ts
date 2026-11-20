@@ -401,7 +401,7 @@ function isUIMessageLike(value: unknown): value is UIMessage {
     && partsAreWellFormed
 }
 
-function getMessageText(message: UIMessage): string {
+export function getMessageText(message: UIMessage): string {
   return message.parts
     .filter((part): part is Extract<UIMessage['parts'][number], { type: 'text' }> => {
       return part.type === 'text' && typeof part.text === 'string'

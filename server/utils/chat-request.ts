@@ -2,11 +2,13 @@ import { validateUIMessages, type UIMessage } from 'ai'
 import {
   DEFAULT_CHAT_MODEL,
   DEFAULT_COMPACTION_SETTINGS,
+  getMessageText,
   validateChatRequest,
   validateModelId,
   type ChatRequestBody,
 } from '../../shared/chat'
 import type { RunLogLevel } from './run-logger'
+import { parseTaskCommand } from '../tasks/command-parser'
 
 export const MAX_CHAT_BODY_BYTES = 256 * 1024
 
@@ -36,6 +38,9 @@ export async function parseChatPayload(raw: string): Promise<ChatRequestBody> {
   }
 
   const request = validateChatRequest(parsed)
+  if (request.message.parts.every(part => part.type === 'text') && parseTaskCommand(getMessageText(request.message))) {
+    throw new Error('Send this task command to the dialogue task-command endpoint')
+  }
 
   try {
     const messages = await validateUIMessages<UIMessage>({

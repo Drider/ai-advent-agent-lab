@@ -137,7 +137,7 @@ export function createValidationFileReader(rootDir?: string) {
   }
 }
 
-export async function executeTaskCommand(runtime: CommandRuntime, taskId: string, envelope: TaskCommandEnvelope,
+export async function executeTaskCommand(runtime: CommandRuntime, taskId: string | null, envelope: TaskCommandEnvelope,
   actor: TaskActorContext, onValidationFailure?: (error: unknown) => void): Promise<TaskCommandResult> {
   const run = runtime.transaction(taskId, envelope, actor)
   if ('ok' in run) return run

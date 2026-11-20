@@ -90,7 +90,7 @@ function toSnapshot(row: TaskRow): TaskSnapshot {
 export function createTaskRepository(db: Database.Database) {
   const byId = db.prepare<[string], TaskRow>(`${snapshots} WHERE tasks.id = ?`)
   const unfinished = db.prepare<[string], TaskRow>(`${snapshots} WHERE session_id = ? AND status IN ('active', 'paused')`)
-  const bySession = db.prepare<[string], TaskRow>(`${snapshots} WHERE session_id = ? ORDER BY created_at DESC, id DESC`)
+  const bySession = db.prepare<[string], TaskRow>(`${snapshots} WHERE session_id = ? ORDER BY tasks.rowid DESC`)
 
   function get(id: string): TaskSnapshot | null {
     const row = byId.get(id)

@@ -6,6 +6,7 @@ import {
   userProfileNameKey,
   type CreateUserProfileInput,
   type UpdateUserProfileInput,
+  type UpdateProfileWorkflowInput,
   type UserProfile,
   type UserProfileSummary,
 } from '../../shared/user-profile'
@@ -159,6 +160,20 @@ export function createUserProfileRepository(db: Database.Database) {
     return transaction.immediate()
   }
 
+  function setWorkflow(id: string, input: UpdateProfileWorkflowInput): UserProfile {
+    return db.transaction(() => {
+      const current = get(id)
+      if (!current) throw new UserProfileError('NOT_FOUND', 'Profile was not found')
+      if (current.revision !== input.expectedRevision) throw new UserProfileError('REVISION_CONFLICT', 'Profile revision changed')
+      if (input.workflowId !== null && !db.prepare('SELECT 1 FROM workflow_versions WHERE workflow_id = ?').get(input.workflowId)) {
+        throw new UserProfileError('NOT_FOUND', 'Workflow was not found')
+      }
+      db.prepare('UPDATE user_profiles SET default_workflow_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?')
+        .run(input.workflowId, new Date().toISOString(), id)
+      return get(id)!
+    }).immediate()
+  }
+
   function selectForSession(sessionId: string, profileId: string, options: { turnId?: string } = {}): UserProfile {
     const transaction = db.transaction(() => {
       const session = db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
@@ -178,5 +193,5 @@ export function createUserProfileRepository(db: Database.Database) {
     return transaction.immediate()
   }
 
-  return { list, get, getDefault, getDefaultId, getForSession, getForTurn, create, update, setDefault, selectForSession }
+  return { list, get, getDefault, getDefaultId, getForSession, getForTurn, create, update, setDefault, setWorkflow, selectForSession }
 }

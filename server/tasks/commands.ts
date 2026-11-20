@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type {
-  JsonValue, TaskActorContext, TaskArtifact, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView, ValidationResult,
+  JsonValue, TaskActorContext, TaskArtifact, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView, TaskWorkflowSelection, ValidationResult,
 } from '../../shared/task'
 import type { ExpectedAction, WorkflowNode } from '../../shared/workflow'
 import { createWorkflowRepository } from '../workflows/repository'
@@ -14,6 +14,7 @@ import { property } from './checks'
 import { createValidationStore, executeTaskCommand, runTaskValidation, hasReadSource, type ValidationRun } from './validation'
 import { createTaskRepository } from './repository'
 import { createTurnRepository } from '../persistence/turn-repository'
+import { createUserProfileRepository } from '../persistence/user-profile-repository'
 import { assertTaskExecutionAllowed } from './tool-policy'
 import { inspectRecovery, resolveObservation, type RecoveryObservation } from './recovery'
 
@@ -37,6 +38,7 @@ interface CreateInput {
   task: string
   operationId: string
   workflow?: { id: string; version: number } | null
+  selection?: TaskWorkflowSelection
 }
 
 interface ReserveInput {
@@ -46,6 +48,7 @@ interface ReserveInput {
   sourceTurnId?: string
   messageText: string
   workflow?: CreateInput['workflow']
+  useProfileDefault?: boolean
 }
 
 const emptyGoal = 'Новая задача'
@@ -143,6 +146,16 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     return { workflowId: id, workflowVersion: version, ...position(entry) }
   }
 
+  function selectedWorkflow(sessionId: string, selection: TaskWorkflowSelection): CreateInput['workflow'] {
+    if (selection === 'none') return null
+    if (typeof selection === 'object') return { id: selection.workflowId, version: selection.version }
+    const id = createUserProfileRepository(db).getForSession(sessionId)?.defaultWorkflowId
+    if (!id) return null
+    const latest = workflows.get(id)
+    if (!latest) reject('NOT_FOUND', 'Default workflow was not found')
+    return { id, version: latest.version }
+  }
+
   function position(node: WorkflowNode) {
     return { nodeId: node.id, nodeVisitId: newId(), stage: node.stage, step: node.label, expected: node.expected }
   }
@@ -183,7 +196,8 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     if (actor.sessionId !== sessionId || !operationId.trim()) {
       return failure(new TaskError('INVALID_INPUT', 'Command must belong to the actor session and have an operation ID'))
     }
-    const inputHash = hash(canonicalJson({ type: 'create', task: input.task, workflow }))
+    const inputHash = hash(canonicalJson({ type: 'create', task: input.task,
+      ...(input.selection === undefined ? { workflow } : { selection: input.selection }) }))
     let existing: TaskSnapshot | null = null
     try {
       const replay = checkReplay(operationId, null, actor, inputHash)
@@ -201,7 +215,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       existing = repository.getUnfinished(sessionId)
       checkTurnStart(sessionId, existing)
       if (existing) reject('TASK_ALREADY_ACTIVE', 'Session already has an unfinished task')
-      task = startTask(sessionId, goal, workflow, now())
+      task = startTask(sessionId, goal, input.selection === undefined ? workflow : selectedWorkflow(sessionId, input.selection), now())
     } catch (error) {
       if (!(error instanceof TaskError)) throw error
       return deny(operationId, actor, inputHash, error, existing, null)
@@ -388,6 +402,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     let approvalId: string | undefined
     if (command.type === 'approve') {
       if (actor.role !== 'user' || node.kind !== 'approval') reject('TRANSITION_NOT_ALLOWED', 'Approval requires a user at an approval node')
+      if (!evidence.approvals.some(request => request.id === command.approvalId)) reject('NOT_FOUND', 'Approval request was not found')
       const edges = definition.transitions.filter(edge => edge.from === node.id && edge.event === 'approve' && edge.actor === 'user')
       if (edges.length !== 1) reject('TRANSITION_NOT_ALLOWED', 'Approval node must have one user approval transition')
       const artifact = currentArtifact(task, evidence, node.expected.artifactKey ?? '')
@@ -461,7 +476,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     return mutation
   })
 
-  const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext,
+  const applyTransaction = db.transaction((taskId: string | null, envelope: TaskCommandEnvelope & { expectedCurrentTaskId?: string | null }, actor: TaskActorContext,
     completed?: { run: ValidationRun; results: ValidationResult[] }, observation?: RecoveryObservation | TaskError, attemptId?: string): TaskCommandResult | ValidationRun => {
     const { operationId, expectedRevision, command } = envelope
     if (!operationId.trim()) return failure(new TaskError('INVALID_INPUT', 'Command requires an operation ID'))
@@ -470,6 +485,7 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       if (repository.isCleared(operationId)) reject('OPERATION_CONFLICT', 'Operation was cleared from history')
       const input = {
         taskId, expectedRevision, turnId: actor.turnId ?? null,
+        ...(envelope.expectedCurrentTaskId !== undefined && { expectedCurrentTaskId: envelope.expectedCurrentTaskId }),
         command: Object.fromEntries(Object.entries(command).filter(([, value]) => value !== undefined)),
       }
       // Hash JSON data before enforcing artifact-specific constraints, so invalid artifacts get durable receipts.
@@ -485,13 +501,24 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       return failure(error)
     }
 
-    const task = getOwned(taskId, actor.sessionId)
+    // A session command replays its original decision before selecting the current task.
+    const fixedTarget = completed?.run.task.id ?? taskId
+    const task = fixedTarget === null ? repository.getUnfinished(actor.sessionId) : getOwned(fixedTarget, actor.sessionId)
     if (completed && (!task || !validations.owns(operationId, completed.run.token))) {
       return failure(new TaskError('OPERATION_CONFLICT', 'Validation reservation no longer exists'))
     }
     let mutation: Mutation
     try {
       checkSession(actor.sessionId)
+      if (taskId === null && envelope.expectedCurrentTaskId !== undefined && envelope.expectedCurrentTaskId !== (task?.id ?? null)) {
+        reject('STALE_TASK_REVISION', 'The current task changed')
+      }
+      if (!task && taskId === null && command.type === 'attach' && actor.role === 'user') {
+        checkTurnStart(actor.sessionId, null)
+        if (expectedRevision !== 0) reject('STALE_TASK_REVISION', 'There is no current task to attach')
+        const created = startTask(actor.sessionId, '', { id: command.workflowId, version: command.version }, now())
+        return accept(operationId, actor, inputHash, created, 'created', { awaitingGoal: true })
+      }
       if (!task) reject('NOT_FOUND', 'Task was not found')
       if (actor.turnId !== undefined) {
         const turn = repository.getTurn(actor.turnId, actor.sessionId)
@@ -545,7 +572,9 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     if (task?.status === 'active' || task?.status === 'paused') {
       const blocked = task.recovery === 'needs_review' || repository.hasUnresolvedOperations(sessionId)
       if (task.status === 'active') actions.push({ type: 'pause', label: 'Пауза' })
-      else if (!blocked) actions.push({ type: 'resume', label: 'Продолжить задачу' })
+      else if (!blocked && repository.getSession(sessionId)?.status !== 'running' && !repository.hasRunningTurn(sessionId)) {
+        actions.push({ type: 'resume', label: 'Продолжить задачу' })
+      }
       actions.push({ type: 'cancel', label: 'Отменить задачу' })
       if (task.status === 'active' && !blocked) {
         if (!task.workflowId && repository.getSession(sessionId)?.status !== 'running' && !repository.hasRunningTurn(sessionId)) {
@@ -594,7 +623,8 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
 
     const goal = input.messageText.trim().slice(0, maxGoalLength)
     if (!task) {
-      const created = startTask(sessionId, goal, input.workflow, now())
+      const workflow = input.useProfileDefault ? selectedWorkflow(sessionId, 'profile_default') : input.workflow
+      const created = startTask(sessionId, goal, workflow, now())
       accept(requestId, actor, inputHash, created, 'created', { awaitingGoal: !goal })
       return created
     }
@@ -620,6 +650,11 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
 export function createTaskService(db: Database.Database, options: TaskServiceOptions = {}) {
   const runtime = createTaskCommandRuntime(db, options)
   const turns = createTurnRepository(db)
+  async function applyAndStop(taskId: string | null, envelope: TaskCommandEnvelope, actor: TaskActorContext) {
+    const result = await executeTaskCommand(runtime, taskId, envelope, actor)
+    if (result.ok && (envelope.command.type === 'pause' || envelope.command.type === 'cancel')) turns.abortStoppedStreams(actor.sessionId)
+    return result
+  }
   async function apply(taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext, call?: { toolCallId: string }) {
     if (call) {
       const toolNames = { update_progress: 'update_task_progress', submit_artifact: 'submit_task_artifact',
@@ -665,9 +700,11 @@ export function createTaskService(db: Database.Database, options: TaskServiceOpt
       return runTaskValidation(db, { taskId, actor, checkIds: envelope.command.checkIds,
         operationId: envelope.operationId, expectedRevision: envelope.expectedRevision }, runtime)
     }
-    const result = await executeTaskCommand(runtime, taskId, envelope, actor)
-    if (result.ok && (envelope.command.type === 'pause' || envelope.command.type === 'cancel')) turns.abortStoppedStreams(actor.sessionId)
-    return result
+    return applyAndStop(taskId, envelope, actor)
   }
-  return { create: runtime.create, view: runtime.view, reserveForTurn: runtime.reserveForTurn, apply }
+  async function applyToCurrent(sessionId: string, envelope: TaskCommandEnvelope, expectedCurrentTaskId?: string | null) {
+    const command = { ...envelope, expectedCurrentTaskId }
+    return applyAndStop(null, command, { sessionId, role: 'user' })
+  }
+  return { create: runtime.create, view: runtime.view, reserveForTurn: runtime.reserveForTurn, apply, applyToCurrent }
 }

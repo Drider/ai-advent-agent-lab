@@ -67,6 +67,8 @@ export interface TaskCommandEnvelope {
   command: TaskCommand
 }
 
+export type TaskWorkflowSelection = 'none' | 'profile_default' | { workflowId: string; version: number }
+
 export type TaskCommandResult =
   | { ok: true; task: TaskSnapshot; resumeRequestId?: string }
   | { ok: false; error: { code: TaskErrorCode; message: string }; task: TaskSnapshot | null }

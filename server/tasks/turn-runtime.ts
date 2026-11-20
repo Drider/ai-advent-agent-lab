@@ -16,6 +16,7 @@ export function startTaskAwareTurn(db: Database.Database, input: StartInput) {
     const { request } = input
     createTurnRepository(db).assertCanStart(request.sessionId, request.requestId)
     const task = createTaskService(db).reserveForTurn({ ...request, workflow: input.workflow,
+      useProfileDefault: input.workflow === undefined,
       sourceTurnId: request.kind === 'continue' ? request.sourceTurnId : undefined,
       messageText: request.message.parts.filter(part => part.type === 'text').map(part => part.text).join('\n'),
     }, { role: 'system', sessionId: request.sessionId })
