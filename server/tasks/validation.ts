@@ -135,7 +135,7 @@ export function createValidationFileReader(rootDir?: string) {
 }
 
 export async function executeTaskCommand(runtime: CommandRuntime, taskId: string, envelope: TaskCommandEnvelope,
-  actor: TaskActorContext): Promise<TaskCommandResult> {
+  actor: TaskActorContext, onValidationFailure?: (error: unknown, run: ValidationRun) => void): Promise<TaskCommandResult> {
   const run = runtime.transaction(taskId, envelope, actor)
   if ('ok' in run) return run
   const { now, readTextFile } = runtime
@@ -157,6 +157,7 @@ export async function executeTaskCommand(runtime: CommandRuntime, taskId: string
   } catch (error) {
     // Permit immediate replay after a failed final commit. If the database is
     // unavailable, the lease expires naturally.
+    try { onValidationFailure?.(error, run) } catch {}
     try { runtime.setValidationLease(run.token, 0) } catch {}
     throw error
   } finally {

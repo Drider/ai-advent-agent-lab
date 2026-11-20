@@ -21,7 +21,7 @@ export const checkOptions = {
     metric: z.enum(['count', 'sum', 'mean']), reportedPath: path, tolerance: z.number().nonnegative() }),
 }
 
-export interface ToolReceipt { toolCallId: string; name: string; output: JsonValue; artifactId?: string }
+export interface ToolReceipt { toolCallId: string; name: string; output: JsonValue; input?: JsonValue; artifactId?: string }
 export interface CheckContext {
   toolResults: ToolReceipt[]
   readTextFile: (path: string) => Promise<string>
@@ -52,7 +52,7 @@ function matchesField(value: JsonValue | undefined, rule: z.infer<typeof field>)
   return (rule.min === undefined || size !== undefined && size >= rule.min)
     && (rule.max === undefined || size !== undefined && size <= rule.max)
 }
-export function successfulOutput(name: string, output: JsonValue): boolean {
+export function successfulOutput(name: string, output: JsonValue, input?: JsonValue): boolean {
   if (property(output, 'error') !== undefined) return false
   const success = workingTool(name)?.success
   switch (success) {
@@ -60,7 +60,18 @@ export function successfulOutput(name: string, output: JsonValue): boolean {
     case 'array': return Array.isArray(output)
     case 'roll': return typeof property(output, 'result') === 'number'
     case 'sessions': return Array.isArray(property(output, 'sessions'))
-    case 'analysis': return property(output, 'totals') !== undefined
+    case 'analysis': {
+      if (!property(output, 'totals')) return false
+      const ok = property(output, 'ok')
+      if (ok !== undefined) return ok === true
+      // Previous receipts contain errors per requested path, but no explicit success flag.
+      const errors = property(output, 'fileErrors')
+      if (!Array.isArray(errors)) return false
+      if (!errors.length) return true
+      const paths = property(input, 'paths')
+      const failedPaths = new Set(errors.map(error => property(error, 'path')))
+      return Array.isArray(paths) && paths.some(path => !failedPaths.has(path))
+    }
     default: return property(output, success) === true
   }
 }
@@ -113,7 +124,7 @@ export async function evaluateCheck(check: CheckDefinition, inputs: TaskArtifact
       case 'tool_success': {
         const { toolName } = checkOptions.tool_success.parse(check.options)
         const passed = inputs.every(item => context.toolResults.some(receipt => receipt.name === toolName
-          && (receipt.artifactId === undefined || receipt.artifactId === item.id) && item.sourceToolCallIds.includes(receipt.toolCallId) && successfulOutput(toolName, receipt.output)))
+          && (receipt.artifactId === undefined || receipt.artifactId === item.id) && item.sourceToolCallIds.includes(receipt.toolCallId) && successfulOutput(toolName, receipt.output, receipt.input)))
         return result(passed, { toolName })
       }
       case 'file_matches': {

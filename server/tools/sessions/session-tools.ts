@@ -196,6 +196,7 @@ export function createSessionTools(options: SessionToolsOptions = {}) {
           ({ sessions, skippedFiles, truncated } = await store.loadSessions())
         }
         return {
+          ok: paths === undefined || sessions.length > 0,
           ...analyzeSessions(sessions, groupBy, { from, to, model, tool, runId }),
           skippedFiles,
           truncated,

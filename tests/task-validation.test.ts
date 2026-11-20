@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { stringify } from 'yaml'
-import { evaluateCheck } from '../server/tasks/checks'
+import { evaluateCheck, type ToolReceipt } from '../server/tasks/checks'
+import { createTurnRepository } from '../server/persistence/turn-repository'
+import { createSessionTools } from '../server/tools/sessions/session-tools'
 import { runTaskValidation } from '../server/tasks/validation'
 import { openChatDatabase } from '../server/persistence/db'
 import { createTaskService } from '../server/tasks/commands'
@@ -235,4 +237,49 @@ it('binds validation to immutable versions and reruns all completion checks desp
   await task.ok({ type: 'transition', transitionId: 'rework' })
   file = 'second'
   expect(await complete('again')).toMatchObject({ ok: true, task: { status: 'done' } })
+})
+
+it.each([['original-call', false], ['new-call', false], ['original-call', true], ['new-call', true]] as const)(
+  'recovers validation in-process using %s after failure to record its error=%s', async (toolCallId, receiptUnavailable) => {
+  const task = fileTask()
+  const snapshot = await task.ok(material('code', { path: 'report', text: 'saved' }))
+  const turns = createTurnRepository(db)
+  const { turnId } = turns.beginUserTurn({ requestId: 'validate-turn', sessionId: task.sessionId, modelId: 'test',
+    message: { id: 'm', role: 'user', parts: [] }, agentConfig: {} })
+  db.prepare('UPDATE turns SET task_id = ? WHERE id = ?').run(task.id, turnId)
+  const actor = { role: 'agent' as const, turnId, sessionId: task.sessionId, stepNodeVisitId: snapshot.nodeVisitId }
+  const envelope = { command: { type: 'validate' as const }, operationId: 'validate', expectedRevision: snapshot.revision }
+  const read = vi.fn(async () => 'saved')
+  const service = createTaskService(db, { readTextFile: read })
+  db.exec("CREATE TRIGGER fail_check BEFORE INSERT ON task_validations BEGIN SELECT RAISE(ABORT, 'commit failed'); END")
+  if (receiptUnavailable) db.exec("CREATE TRIGGER fail_record BEFORE UPDATE ON tool_executions BEGIN SELECT RAISE(ABORT, 'record failed'); END")
+  await expect(service.apply(task.id, envelope, actor, { toolCallId: 'original-call' })).rejects.toThrow('commit failed')
+  if (receiptUnavailable) db.exec('DROP TRIGGER fail_record')
+  if (!receiptUnavailable) expect(db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'original-call'").get()).toEqual({ status: 'failed' })
+  expect(task.view().validations).toEqual([])
+  db.exec('DROP TRIGGER fail_check')
+  await expect(service.apply(task.id, { ...envelope, operationId: 'different' }, actor, { toolCallId: 'original-call' }))
+    .rejects.toMatchObject({ code: 'OPERATION_CONFLICT' })
+  const result = await service.apply(task.id, envelope, actor, { toolCallId })
+  expect(result.ok).toBe(true)
+  expect(await service.apply(task.id, envelope, actor, { toolCallId: 'replay' })).toEqual(result)
+  expect(task.view().validations).toHaveLength(1)
+  expect(read).toHaveBeenCalledTimes(2)
+  turns.markStopped(turnId)
+  expect(turns.assessContinuation(turnId)).toBe('safe')
+})
+
+it('distinguishes an empty session aggregate from failure to load all requested paths', async () => {
+  const tools = createSessionTools({ rootDir: '/unavailable-session-root-' + randomUUID() })
+  const check: CheckDefinition = { id: 'analysis', kind: 'tool_success', artifactKeys: ['report'], options: { toolName: 'analyze_sessions' } }
+  for (const [paths, expected] of [[undefined, 'passed'], [['a.json', 'b.json'], 'failed']] as const) {
+    const output = await tools.analyze_sessions.execute!({ groupBy: 'day', ...(paths && { paths: [...paths] }) },
+      { toolCallId: 'source', messages: [], context: {} })
+    const toolResults = [{ toolCallId: 'source', name: 'analyze_sessions', output: JSON.parse(JSON.stringify(output)) }]
+    expect((await evaluateCheck(check, [item('report', {})], { ...context, toolResults })).outcome).toBe(expected)
+    // The original on-disk format had no top-level success flag.
+    const { ok: _ok, ...legacyOutput } = toolResults[0]!.output
+    const oldReceipt: ToolReceipt = { ...toolResults[0]!, output: legacyOutput, input: paths ? { paths: [...paths] } : {} }
+    expect((await evaluateCheck(check, [item('report', {})], { ...context, toolResults: [oldReceipt] })).outcome).toBe(expected)
+  }
 })

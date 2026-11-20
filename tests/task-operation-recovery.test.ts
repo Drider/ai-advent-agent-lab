@@ -36,10 +36,11 @@ describe('task operation receipts', () => {
       f.db.exec("CREATE TRIGGER broken BEFORE UPDATE ON tool_executions WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'receipt failed'); END")
       await expect(f.write('first', '\uFEFFdata\u0000')()).rejects.toThrow('receipt failed')
       expect(f.exists()).toBe(true)
+      expect(f.view().recoveryOperations).toMatchObject([{ status: 'uncertain' }])
       f.db.exec('DROP TRIGGER broken')
       await expect(f.write('again', '\uFEFFdata\u0000')()).rejects.toMatchObject({ code: 'RECOVERY_REVIEW_REQUIRED' })
-      f.turns.recoverRunningTurns()
-      recoverTaskOperations(f.db)
+      f.turns.markStopped(f.actor.turnId)
+      expect(f.turns.assessContinuation(f.actor.turnId)).toBe('needs_review')
       const op = f.view().recoveryOperations[0]!
       expect(op).toMatchObject({ status: 'uncertain', path: 'out.txt' })
       await f.ok({ type: 'cancel' }, 'user')
@@ -83,5 +84,23 @@ it('closes a restarted read-only checker receipt without blocking safe continuat
     recoverTaskOperations(f.db)
     expect(f.turns.assessContinuation(f.actor.turnId)).toBe('safe')
     expect(f.db.prepare("SELECT status FROM tool_executions WHERE tool_call_id = 'check'").get()).toEqual({ status: 'failed' })
+  } finally { f.close() }
+})
+
+it('preserves an earlier source receipt when a later turn replays its action', async () => {
+  const f = taskToolFixture()
+  try {
+    const output = await f.write('original')()
+    f.turns.markStopped(f.actor.turnId)
+    const { turnId } = f.turns.beginUserTurn({ requestId: 'second-turn', sessionId: f.sessionId, modelId: 'test',
+      message: { id: 'second-message', role: 'user', parts: [] }, agentConfig: {} })
+    f.db.prepare('UPDATE turns SET task_id = ? WHERE id = ?').run(f.id, turnId)
+    const ops = createTaskToolOperations(f.db)
+    const reserve = (toolCallId: string) => ops.reserve({ taskId: f.id, toolName: 'write_file', turnId, toolCallId,
+      nodeVisitId: f.actor.stepNodeVisitId, actionKey: 'report-v1', input: { content: 'ok', path: 'out.txt' } })
+    expect(() => reserve('original')).toThrowError(expect.objectContaining({ code: 'OPERATION_CONFLICT' }))
+    expect(reserve('second-call')).toMatchObject({ kind: 'replay', output })
+    const receipts = createArtifactStore(f.db).receipts(f.id, f.actor.stepNodeVisitId!, ['original', 'second-call'])
+    expect(receipts.map(row => row.toolCallId)).toEqual(['original', 'second-call'])
   } finally { f.close() }
 })

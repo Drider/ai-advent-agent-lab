@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import Database from 'better-sqlite3'
 import type { UIMessage } from 'ai'
 import {
@@ -14,6 +15,7 @@ import { assertHistoryAvailable } from '../memory/clear-repository'
 export class TurnRepositoryError extends Error {
   constructor(
     public readonly code:
+      | 'OPERATION_CONFLICT'
       | 'TURN_ALREADY_EXISTS'
       | 'SESSION_NOT_FOUND'
       | 'TURN_NOT_FOUND'
@@ -213,12 +215,29 @@ export function createTurnRepository(db: Database.Database) {
     })
   }
 
-  function getTurnRow(turnId: string): { session_id: string; status: ChatTurnStatus } {
-    const row = db.prepare('SELECT session_id, status FROM turns WHERE id = ?').get(turnId) as { session_id: string; status: ChatTurnStatus } | undefined
+  function getTurnRow(turnId: string) {
+    const row = db.prepare<[string], { session_id: string; status: ChatTurnStatus; task_id: string | null }>(
+      'SELECT session_id, status, task_id FROM turns WHERE id = ?',
+    ).get(turnId)
     if (!row) {
       throw new TurnRepositoryError('TURN_NOT_FOUND', `turn ${turnId} was not found`)
     }
     return row
+  }
+
+  function settleFailedValidations(turnId: string) {
+    const pending = db.prepare<[string], { id: string; token: string; error: string }>(`
+      SELECT e.id, v.id AS token, json_extract(v.details_json, '$.toolError') AS error
+      FROM tool_executions e JOIN task_events v ON v.source_turn_id = e.turn_id AND v.task_id = e.task_id
+        AND v.type = 'validation_requested' AND v.operation_id = json_extract(e.input_json, '$.operationId')
+        AND e.tool_call_id = json_extract(v.details_json, '$.failedToolCallId')
+      WHERE e.turn_id = ? AND e.status = 'running' AND e.task_operation_id IS NULL
+    `).all(turnId)
+    for (const { id, token, error } of pending) {
+      db.prepare(`UPDATE tool_executions SET status = 'failed', error_json = ?, updated_at = ?
+        WHERE id = ? AND status = 'running' AND EXISTS (SELECT 1 FROM task_events WHERE id = ?)`)
+        .run(JSON.stringify(error), now(), id, token)
+    }
   }
 
   function assessContinuation(sourceTurnId: string): 'safe' | 'needs_review' | 'not_available' {
@@ -229,6 +248,7 @@ export function createTurnRepository(db: Database.Database) {
     if (turn.status === 'needs_review') {
       return 'needs_review'
     }
+    try { settleFailedValidations(sourceTurnId) } catch { return 'needs_review' }
     const uncertain = db.prepare(`
       SELECT 1
       FROM tool_executions e LEFT JOIN task_tool_operations o ON o.id = e.task_operation_id
@@ -284,6 +304,7 @@ export function createTurnRepository(db: Database.Database) {
     name: string
     taskId?: string
     taskOperationId?: string
+    retryFailedTaskCommand?: boolean
     input: unknown
   }): boolean {
     return transaction(() => {
@@ -291,10 +312,23 @@ export function createTurnRepository(db: Database.Database) {
       if (turn.status !== 'running') {
         return false
       }
-      const existing = db.prepare('SELECT 1 FROM tool_executions WHERE turn_id = ? AND tool_call_id = ?')
+      // Artifacts address a call by (task, call ID), including legacy rows linked only through their turn.
+      if (turn.task_id && db.prepare(`SELECT 1 FROM tool_executions e JOIN turns t ON t.id = e.turn_id
+        WHERE t.task_id = ? AND e.tool_call_id = ? AND t.id <> ? LIMIT 1`).get(turn.task_id, input.toolCallId, input.turnId)) {
+        throw new TurnRepositoryError('OPERATION_CONFLICT', 'Tool call ID already belongs to another turn of this task')
+      }
+      if (input.retryFailedTaskCommand) settleFailedValidations(input.turnId)
+      const existing = db.prepare<[string, string], {
+        status: string; task_id: string | null; task_operation_id: string | null; tool_name: string; input_json: string
+      }>('SELECT status, task_id, task_operation_id, tool_name, input_json FROM tool_executions WHERE turn_id = ? AND tool_call_id = ?')
         .get(input.turnId, input.toolCallId)
       if (existing) {
-        return false
+        if (!input.retryFailedTaskCommand || !input.taskId || existing.status !== 'failed' || existing.task_id !== input.taskId
+          || existing.task_operation_id !== null || existing.tool_name !== input.name
+          || !isDeepStrictEqual(JSON.parse(existing.input_json), input.input)) return false
+        db.prepare(`UPDATE tool_executions SET status = 'running', error_json = NULL, output_json = NULL, updated_at = ?
+          WHERE turn_id = ? AND tool_call_id = ?`).run(now(), input.turnId, input.toolCallId)
+        return true
       }
       const timestamp = now()
       db.prepare(`

@@ -632,7 +632,7 @@ export function createTaskService(db: Database.Database, options: TaskServiceOpt
         if (!finalizingValidation) {
           assertTaskExecutionAllowed(db, taskId, actor, true)
           if (!turns.recordToolStart({ turnId: actor.turnId!, toolCallId: call.toolCallId,
-            name: toolName, input: envelope, stepIndex: actor.stepIndex ?? 0, taskId })) {
+            name: toolName, input: envelope, stepIndex: actor.stepIndex ?? 0, taskId, retryFailedTaskCommand: true })) {
             throw new TaskError('OPERATION_CONFLICT', 'Tool call already exists')
           }
         }
@@ -640,7 +640,16 @@ export function createTaskService(db: Database.Database, options: TaskServiceOpt
         if ('ok' in result) turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, output: result })
         return result
       })
-      return executeTaskCommand({ ...runtime, transaction: transaction.immediate }, taskId, envelope, actor)
+      return executeTaskCommand({ ...runtime, transaction: transaction.immediate }, taskId, envelope, actor, (error, run) => {
+        const message = error instanceof Error ? error.message : String(error)
+        try {
+          turns.recordToolEnd({ turnId: actor.turnId!, toolCallId: call.toolCallId, error: message })
+        } catch {
+          // A temporary receipt-table failure can outlast the failed commit. Keep the exact call recoverable in-process.
+          db.prepare(`UPDATE task_events SET details_json = json_set(details_json, '$.failedToolCallId', ?, '$.toolError', ?)
+            WHERE id = ? AND type = 'validation_requested'`).run(call.toolCallId, message, run.token)
+        }
+      })
     }
     if (envelope.command.type === 'resolve_recovery') {
       let observation: RecoveryObservation | TaskError | undefined
