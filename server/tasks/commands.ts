@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type {
-  JsonValue, TaskActorContext, TaskArtifact, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView,
+  JsonValue, TaskActorContext, TaskArtifact, TaskCommand, TaskCommandEnvelope, TaskCommandResult, TaskErrorCode, TaskSnapshot, TaskView, ValidationResult,
 } from '../../shared/task'
 import type { ExpectedAction, WorkflowNode } from '../../shared/workflow'
 import { createWorkflowRepository } from '../workflows/repository'
@@ -10,11 +10,17 @@ import { createApprovalStore } from './approvals'
 import { createArtifactStore, nonempty } from './artifacts'
 import { completionError, currentArtifact, evaluateTransition, hasApproval } from './workflow'
 import { TaskError } from './errors'
+import { property } from './checks'
+import { createValidationStore, executeTaskCommand, runTaskValidation, hasReadSource, type ValidationRun } from './validation'
 import { createTaskRepository } from './repository'
 
 type ArtifactSource = { content: JsonValue; sourceMessageIds: string[]; sourceToolCallIds: string[] }
 
 type TaskState = Parameters<ReturnType<typeof createTaskRepository>['update']>[2]
+
+class ChecksRequested {
+  constructor(readonly ids: string[]) {}
+}
 
 interface Mutation {
   state: TaskState
@@ -64,10 +70,13 @@ function requireActive(task: TaskSnapshot): void {
   if (task.status === 'done') reject('TASK_TERMINAL', 'Task is complete')
 }
 
-export function createTaskService(db: Database.Database, options: { now?: () => string; newId?: () => string } = {}) {
+interface TaskServiceOptions { now?: () => string; newId?: () => string; readTextFile?: (path: string) => Promise<string> }
+
+export function createTaskCommandRuntime(db: Database.Database, options: TaskServiceOptions = {}) {
   const repository = createTaskRepository(db)
   const artifacts = createArtifactStore(db)
   const approvals = createApprovalStore(db)
+  const validations = createValidationStore(db)
   const workflows = createWorkflowRepository(db)
   const now = options.now ?? (() => new Date().toISOString())
   const newId = options.newId ?? randomUUID
@@ -89,8 +98,12 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     if (!receipt) return
     if (receipt.session_id !== actor.sessionId || receipt.actor !== actor.role
       || (receipt.input_hash !== inputHash && receipt.input_hash !== originalInputHash)
-      || (taskId !== null && receipt.task_id !== null && receipt.task_id !== taskId) || receipt.receipt_json === null) {
+      || (taskId !== null && receipt.task_id !== null && receipt.task_id !== taskId)) {
       reject('OPERATION_CONFLICT', 'Operation ID already belongs to a different or unfinished command')
+    }
+    if (receipt.receipt_json === null) {
+      if (validations.reclaim(operationId)) return
+      reject('OPERATION_CONFLICT', 'Operation is running')
     }
     return JSON.parse(receipt.receipt_json) as TaskCommandResult
   }
@@ -329,6 +342,11 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
         reject('PLAN_APPROVAL_REQUIRED', 'Current node requires an approved artifact')
       }
       checkArtifactSources(task, command)
+      if (slot.type === 'dataset' && definition.checks.some(check => check.kind === 'tool_success'
+        && check.artifactKeys.includes(slot.key) && property(check.options, 'toolName') === 'read_file')
+        && !hasReadSource(command.content, artifacts.receipts(task.id, task.nodeVisitId, command.sourceToolCallIds))) {
+        reject('INVALID_INPUT', 'Dataset must match a confirmed read from this visit')
+      }
       const current = currentArtifact(task, evidence, slot.key)
       const artifactId = saveArtifact(task, slot.key, slot.type, command, at, current)
       if (artifactId !== current?.id) {
@@ -338,7 +356,18 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
           approvals.obsolete(task.id, slot.key, at)
         }
       }
-      return { state, type: 'artifact_submitted', details: { artifactId } }
+      return { state, type: 'artifact_submitted', details: { artifactId, nodeVisitId: task.nodeVisitId } }
+    }
+
+    if (command.type === 'validate') {
+      const ids = command.checkIds ?? node.checkIds
+      if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length || ids.some(id => !node.checkIds.includes(id))) {
+        reject('TRANSITION_NOT_ALLOWED', 'Select checks assigned to the current node')
+      }
+      if (node.requiredApprovalKeys.some(key => !hasApproval(task, evidence, key))) {
+        reject('PLAN_APPROVAL_REQUIRED', 'Validation requires a current approval')
+      }
+      return { state, type: 'validated', details: { checkIds: ids } }
     }
 
     let transitionId: string
@@ -407,9 +436,19 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
   }
 
   // A rejected command gets a receipt in the outer transaction. Roll back any tentative evidence writes first.
-  const mutate = db.transaction(applyCommand)
+  const mutate = db.transaction((task: TaskSnapshot, command: TaskCommand, actor: TaskActorContext, timestamp: string,
+    reserve: boolean) => {
+    const mutation = applyCommand(task, command, actor, timestamp)
+    if (reserve && task.workflowId && (mutation.type === 'validated' || mutation.state.status === 'done')) {
+      const definition = workflows.get(task.workflowId, task.workflowVersion!)!.definition
+      const node = definition.nodes.find(node => node.id === task.nodeId)!
+      throw new ChecksRequested(command.type === 'validate' ? command.checkIds ?? node.checkIds : definition.completionCheckIds)
+    }
+    return mutation
+  })
 
-  const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext): TaskCommandResult => {
+  const applyTransaction = db.transaction((taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext,
+    completed?: { run: ValidationRun; results: ValidationResult[] }): TaskCommandResult | ValidationRun => {
     const { operationId, expectedRevision, command } = envelope
     if (!operationId.trim()) return failure(new TaskError('INVALID_INPUT', 'Command requires an operation ID'))
     let inputHash: string
@@ -422,8 +461,10 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       // Hash JSON data before enforcing artifact-specific constraints, so invalid artifacts get durable receipts.
       assertJsonValue(input, [], true)
       inputHash = hash(canonicalJson(input))
-      const replay = checkReplay(operationId, taskId, actor, inputHash)
-      if (replay) return replay
+      if (!completed) {
+        const replay = checkReplay(operationId, taskId, actor, inputHash)
+        if (replay) return replay
+      }
     } catch (error) {
       if (error instanceof RangeError) return failure(new TaskError('INVALID_INPUT', 'Command input cannot be serialized'))
       if (!(error instanceof TaskError)) throw error
@@ -431,6 +472,9 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     }
 
     const task = getOwned(taskId, actor.sessionId)
+    if (completed && (!task || repository.getCommand(operationId)?.receipt_json !== null)) {
+      return failure(new TaskError('OPERATION_CONFLICT', 'Validation reservation no longer exists'))
+    }
     let mutation: Mutation
     try {
       checkSession(actor.sessionId)
@@ -443,8 +487,27 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
       }
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) reject('INVALID_INPUT', 'Task revision is invalid')
       if (task.revision !== expectedRevision) reject('STALE_TASK_REVISION', 'Task revision changed')
-      mutation = mutate(task, command, actor, now())
+      if (completed) {
+        validations.verify(completed.run, operationId, task)
+        requireActive(task)
+        checkRecovery(task.sessionId, task)
+        validations.persist(completed.results)
+        if (command.type !== 'validate' && completed.results.some(row => row.outcome !== 'passed')) {
+          const timestamp = now()
+          repository.update(task.id, expectedRevision, { ...task, resultArtifactId: task.result?.id ?? null, updatedAt: timestamp })
+          const updated = repository.get(task.id)!
+          repository.appendEvent({ id: newId(), task: updated, operationId, actor, type: 'validated',
+            details: { validationIds: completed.results.map(row => row.id) } })
+          return deny(operationId, actor, inputHash, new TaskError('VALIDATION_REQUIRED', 'Completion checks did not pass'), updated, task.id)
+        }
+      }
+      mutation = mutate(task, command, actor, now(), !completed)
+      if (completed) mutation.details = { ...mutation.details, validationIds: completed.results.map(row => row.id) }
     } catch (error) {
+      if (error instanceof ChecksRequested && task?.workflowId) {
+        return validations.reserve(task, workflows.get(task.workflowId, task.workflowVersion!)!.definition,
+          error.ids, actor, operationId, inputHash, now())
+      }
       if (!(error instanceof TaskError)) throw error
       return deny(operationId, actor, inputHash, error, task, task?.id ?? null)
     }
@@ -452,10 +515,6 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     repository.update(task.id, expectedRevision, mutation.state)
     return accept(operationId, actor, inputHash, repository.get(task.id)!, mutation.type, mutation.details, mutation.resumeRequestId)
   })
-
-  async function apply(taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext): Promise<TaskCommandResult> {
-    return applyTransaction.immediate(taskId, envelope, actor)
-  }
 
   function view(taskId: string, sessionId: string): TaskView {
     const task = getOwned(taskId, sessionId)
@@ -531,5 +590,18 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     return task
   })
 
-  return { create: create.immediate, apply, view, reserveForTurn: reserveForTurn.immediate }
+  return { create: create.immediate, transaction: applyTransaction.immediate, view, reserveForTurn: reserveForTurn.immediate,
+    now, readTextFile: options.readTextFile }
+}
+
+export function createTaskService(db: Database.Database, options: TaskServiceOptions = {}) {
+  const runtime = createTaskCommandRuntime(db, options)
+  function apply(taskId: string, envelope: TaskCommandEnvelope, actor: TaskActorContext) {
+    if (envelope.command.type === 'validate') {
+      return runTaskValidation(db, { taskId, actor, checkIds: envelope.command.checkIds,
+        operationId: envelope.operationId, expectedRevision: envelope.expectedRevision }, runtime)
+    }
+    return executeTaskCommand(runtime, taskId, envelope, actor)
+  }
+  return { create: runtime.create, view: runtime.view, reserveForTurn: runtime.reserveForTurn, apply }
 }

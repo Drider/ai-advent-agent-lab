@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
+import { checkOptions } from '../tasks/checks'
 import type { JsonValue } from '../../shared/task'
 import type { WorkflowDefinition } from '../../shared/workflow'
 import { WorkflowSchemaError, type WorkflowSchemaIssue } from '../tasks/errors'
@@ -219,7 +220,27 @@ function graphIssues(definition: WorkflowDefinition): WorkflowSchemaIssue[] {
   })
 
   definition.checks.forEach((check, index) => {
-    checkReferences(check.artifactKeys, artifactKeys, ['checks', index, 'artifactKeys'])
+    const path = ['checks', index]
+    checkReferences(check.artifactKeys, artifactKeys, [...path, 'artifactKeys'])
+    if (!check.artifactKeys.length || new Set(check.artifactKeys).size !== check.artifactKeys.length) {
+      add([...path, 'artifactKeys'], 'Expected distinct input artifact keys')
+    }
+    const options = checkOptions[check.kind].safeParse(check.options)
+    if (!options.success) {
+      for (const issue of options.error.issues) {
+        const at = [...path, 'options', ...issue.path.map(part => typeof part === 'symbol' ? String(part) : part)]
+        if (issue.code === 'unrecognized_keys') issue.keys.forEach(key => add([...at, key], 'Unknown option'))
+        else add(at, issue.message)
+      }
+    } else if ('toolName' in options.data && !workingTools.has(options.data.toolName)) {
+      add([...path, 'options', 'toolName'], 'Unknown working tool')
+    } else if ('datasetKey' in options.data && (check.artifactKeys.length !== 2
+      || options.data.datasetKey === options.data.reportKey
+      || !check.artifactKeys.includes(options.data.datasetKey) || !check.artifactKeys.includes(options.data.reportKey))) {
+      add([...path, 'artifactKeys'], 'Numeric checks require the dataset and report as distinct inputs')
+    } else if ((check.kind === 'sections' || check.kind === 'file_matches') && check.artifactKeys.length !== 1) {
+      add([...path, 'artifactKeys'], 'Expected one input artifact')
+    }
   })
 
   if (issues.length) return issues

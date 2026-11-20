@@ -51,7 +51,7 @@ export type TaskCommand =
   | { type: 'update_progress'; progress: string; expected?: ExpectedAction }
   | { type: 'submit_artifact'; key: string; content: JsonValue; sourceMessageIds: string[]; sourceToolCallIds: string[] }
   | { type: 'transition'; transitionId: string }
-  | { type: 'validate' }
+  | { type: 'validate'; checkIds?: string[] }
   | { type: 'finish'; resultArtifactId?: string; resultText?: string }
   | { type: 'attach'; workflowId: string; version: number }
   | { type: 'pause' }

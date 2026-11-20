@@ -68,5 +68,11 @@ export function createWorkflowRepository(db: Database.Database) {
     return saveVersion(id, current.version + 1, definition, new Date().toISOString())
   })
 
-  return { list, get, create: create.immediate, publish: publish.immediate }
+  const seed = db.transaction((id: string, name: string, definition: WorkflowDefinition) => {
+    if (latestVersion.get(id)) return
+    const timestamp = new Date().toISOString()
+    insertWorkflow.run(id, name, timestamp)
+    saveVersion(id, 1, definition, timestamp)
+  })
+  return { list, get, seed: seed.immediate, create: create.immediate, publish: publish.immediate }
 }

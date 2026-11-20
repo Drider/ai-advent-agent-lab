@@ -138,12 +138,18 @@ export function createTaskRepository(db: Database.Database) {
     result: TaskCommandResult
     timestamp: string
   }): void {
-    db.prepare(`
+    const saved = db.prepare(`
       INSERT INTO task_commands (operation_id, session_id, task_id, actor, input_hash, phase,
         receipt_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(operation_id) DO UPDATE SET phase = excluded.phase, receipt_json = excluded.receipt_json,
+        updated_at = excluded.updated_at
+      WHERE task_commands.phase = 'running' AND task_commands.input_hash = excluded.input_hash
+        AND task_commands.session_id = excluded.session_id AND task_commands.actor = excluded.actor
+        AND task_commands.task_id IS excluded.task_id
     `).run(input.operationId, input.actor.sessionId, input.taskId, input.actor.role, input.inputHash,
       input.result.ok ? 'completed' : 'rejected', JSON.stringify(input.result), input.timestamp, input.timestamp)
+    if (saved.changes !== 1) throw new Error('Command reservation changed')
   }
 
   function appendEvent(input: {

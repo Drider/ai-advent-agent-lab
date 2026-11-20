@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type Database from 'better-sqlite3'
 import type { JsonValue, TaskArtifact } from '../../shared/task'
 
@@ -53,8 +54,40 @@ export function createArtifactStore(db: Database.Database) {
     return toolCallIds.every(id => priorCall.get(taskId, id) === undefined)
   }
 
+  // A tool-call ID is local to its turn. Resolve it only when it identifies one
+  // execution in this task and a completed operation for the producing visit.
+  function receipts(taskId: string, visitId: string, ids: string[]) {
+    const query = db.prepare<[string, string], { name: string; visit: string | null; output: string | null;
+      receipt: string | null; input: string; status: string; operationStatus: string | null }>(`
+      SELECT e.tool_name AS name, e.status, e.input_json AS input, e.output_json AS output,
+        o.node_visit_id AS visit, o.status AS operationStatus, o.receipt_json AS receipt
+      FROM tool_executions e JOIN turns t ON t.id = e.turn_id
+      LEFT JOIN task_tool_operations o ON o.id = e.task_operation_id AND o.task_id = t.task_id
+        AND o.tool_name = e.tool_name AND e.task_id = t.task_id
+      WHERE t.task_id = ? AND e.tool_call_id = ?
+    `)
+    return [...new Set(ids)].flatMap(toolCallId => {
+      if (!afterActivation(taskId, [toolCallId])) return []
+      const rows = query.all(taskId, toolCallId)
+      const row = rows[0]
+      if (rows.length !== 1 || !row || row.visit !== visitId || row.status !== 'completed'
+        || row.operationStatus !== 'completed' || !row.output || !row.receipt) return []
+      const output: JsonValue = JSON.parse(row.output)
+      if (!isDeepStrictEqual(output, JSON.parse(row.receipt))) return []
+      return [{ toolCallId, name: row.name, output, input: JSON.parse(row.input) as JsonValue }]
+    })
+  }
+
+  function producingVisit(taskId: string, artifactId: string) {
+    return db.prepare<[string, string], { visit: string | null }>(`
+      SELECT json_extract(details_json, '$.nodeVisitId') AS visit FROM task_events
+      WHERE task_id = ? AND type = 'artifact_submitted' AND json_extract(details_json, '$.artifactId') = ?
+      ORDER BY revision LIMIT 1
+    `).get(taskId, artifactId)?.visit
+  }
+
   return {
-    afterActivation,
+    afterActivation, receipts, producingVisit,
     latest(taskId: string, key: string): TaskArtifact | null {
       const row = byKey.get(taskId, key)
       return row ? artifact(row) : null

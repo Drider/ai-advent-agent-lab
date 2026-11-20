@@ -28,11 +28,10 @@ export function hasApproval(task: TaskSnapshot, evidence: WorkflowEvidence, key:
 function checkOutcome(task: TaskSnapshot, definition: WorkflowDefinition, evidence: WorkflowEvidence, id: string) {
   const check = definition.checks.find(item => item.id === id)
   if (!check) return
-  // Ties use insertion order. The store returns rows oldest first.
+  // Repository order is the durable SQLite insertion order, independent of the display clock.
   let latest: ValidationResult | undefined
   for (const row of evidence.validations) {
-    if (row.taskId === task.id && row.checkId === id && row.nodeVisitId === task.nodeVisitId
-      && (!latest || row.createdAt >= latest.createdAt)) latest = row
+    if (row.taskId === task.id && row.checkId === id && row.nodeVisitId === task.nodeVisitId) latest = row
   }
   if (!latest || latest.checkerVersion !== 1 || latest.inputs.length !== check.artifactKeys.length) return
   const inputs = latest.inputs

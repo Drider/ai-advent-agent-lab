@@ -17,6 +17,7 @@ import {
 } from './file-tool-contracts'
 
 const decoder = new TextDecoder('utf-8', { fatal: true })
+const bytePreservingDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 function invalidPath(_value: string): ToolResult<never> {
   return failure('INVALID_PATH', 'path is not allowed')
@@ -72,13 +73,13 @@ function isTooLarge(buffer: Buffer, maxBytes: number): boolean {
   return buffer.byteLength > maxBytes
 }
 
-function decodeText(buffer: Buffer): ToolResult<string> {
+function decodeText(buffer: Buffer, preserveBOM: boolean): ToolResult<string> {
   if (buffer.includes(0)) {
     return failure('NOT_TEXT', 'file contains a NUL byte')
   }
 
   try {
-    return success(decoder.decode(buffer))
+    return success((preserveBOM ? bytePreservingDecoder : decoder).decode(buffer))
   } catch {
     return failure('NOT_TEXT', 'file is not valid UTF-8 text')
   }
@@ -112,7 +113,7 @@ function validatePattern(pattern: string): ToolResult<void> {
   return success(undefined)
 }
 
-async function readTextFile(rootDir: string, relativePath: string, maxBytes: number): Promise<ToolResult<string>> {
+async function readTextFile(rootDir: string, relativePath: string, maxBytes: number, preserveBOM: boolean): Promise<ToolResult<string>> {
   const pathCheck = await rejectSymlinkComponents(rootDir, relativePath, false)
   if (!pathCheck.ok) {
     return pathCheck
@@ -128,7 +129,7 @@ async function readTextFile(rootDir: string, relativePath: string, maxBytes: num
     if (isTooLarge(content, maxBytes)) {
       return failure('TOO_LARGE', `file exceeds ${maxBytes} UTF-8 bytes`)
     }
-    return decodeText(content)
+    return decodeText(content, preserveBOM)
   } catch (error) {
     if (isMissing(error)) {
       return failure('NOT_FOUND', 'file was not found')
@@ -214,7 +215,7 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
     })
   }
 
-  async function readFile(path: string): Promise<ToolResult<ReadFileData>> {
+  async function readFile(path: string, options: { preserveBOM?: boolean } = {}): Promise<ToolResult<ReadFileData>> {
     if (typeof path !== 'string' || !validateRelativePath(path, MAX_PATH_LENGTH)) {
       return invalidPath(typeof path === 'string' ? path : '')
     }
@@ -225,7 +226,7 @@ export function createFileWorkspace(rootDir = join(process.cwd(), 'data'), maxRe
       return invalidPath(path)
     }
 
-    const result = await readTextFile(absoluteRoot, relativePath, maxReadBytes)
+    const result = await readTextFile(absoluteRoot, relativePath, maxReadBytes, options.preserveBOM === true)
     return result.ok ? success({ path: relativePath, text: result.data }) : result
   }
 
