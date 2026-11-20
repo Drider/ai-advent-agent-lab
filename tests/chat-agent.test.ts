@@ -208,6 +208,7 @@ describe('chat agent', () => {
       id: randomUUID(),
       name: 'Кратко',
       revision: 4,
+      defaultWorkflowId: null,
       instructions: 'Отвечай коротко и отмечай ограничения.',
     }
     const model = new MockLanguageModelV3({

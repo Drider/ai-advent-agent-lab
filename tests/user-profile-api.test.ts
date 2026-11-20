@@ -89,7 +89,7 @@ describe('user profile API', () => {
     const selected = await request(`/sessions/${session.id}/user-profile`, body('PATCH', { profileId: created.id }))
 
     expect(selected.status).toBe(200)
-    expect(await json(selected)).toMatchObject({ userProfileId: created.id, userProfile: { name: 'Кратко' } })
+    expect(await json(selected)).toMatchObject({ userProfileId: created.id, userProfile: { name: 'Кратко', defaultWorkflowId: null } })
     expect((await json(await request(`/sessions/${other.id}`))).userProfileId).not.toBe(created.id)
 
     const turnId = crypto.randomUUID()

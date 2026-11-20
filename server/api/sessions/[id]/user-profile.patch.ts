@@ -26,6 +26,7 @@ export default defineEventHandler(async (event) => {
       id: profile.id,
       name: profile.name,
       revision: profile.revision,
+      defaultWorkflowId: profile.defaultWorkflowId,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
     }

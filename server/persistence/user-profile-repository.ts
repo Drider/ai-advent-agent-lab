@@ -10,13 +10,14 @@ import {
   type UserProfileSummary,
 } from '../../shared/user-profile'
 
-const PROFILE_FIELDS = 'id, name, instructions, revision, created_at, updated_at'
+const PROFILE_FIELDS = 'id, name, instructions, revision, default_workflow_id, created_at, updated_at'
 
 interface UserProfileRow {
   id: string
   name: string
   instructions: string
   revision: number
+  default_workflow_id: string | null
   created_at: string
   updated_at: string
 }
@@ -27,6 +28,7 @@ function toProfile(row: UserProfileRow): UserProfile {
     name: row.name,
     instructions: row.instructions,
     revision: row.revision,
+    defaultWorkflowId: row.default_workflow_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

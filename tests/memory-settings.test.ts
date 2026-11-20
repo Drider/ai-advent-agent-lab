@@ -35,11 +35,11 @@ describe('memory settings', () => {
     expect(settings.get()).toEqual({ workingTokens: 2000, longTermTokens: 2000, revision: 0 })
   })
 
-  it('creates the version 13 memory, model configuration, and user profile tables and keeps the migration idempotent', () => {
+  it('creates the memory, model configuration, and user profile tables and keeps the migration idempotent', () => {
     const db = openChatDatabase(':memory:')
     databases.push(db)
 
-    expect(db.pragma('user_version', { simple: true })).toBe(13)
+    expect(db.pragma('user_version', { simple: true })).toBe(14)
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('projects', 'working_memory_entries', 'long_term_facts', 'project_long_term_facts', 'memory_settings', 'memory_usage_events', 'history_clear_operations', 'cleared_requests', 'cleared_tool_calls', 'model_configurations', 'user_profiles', 'user_profile_settings') ORDER BY name").all()).toEqual([
       { name: 'cleared_requests' },
       { name: 'cleared_tool_calls' },

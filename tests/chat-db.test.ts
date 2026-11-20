@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openChatDatabase } from '../server/persistence/db'
+import { createUserProfileRepository } from '../server/persistence/user-profile-repository'
+import { removeTaskSchema } from './helpers/chat-db'
 
 const temporaryDirectories: string[] = []
 
@@ -35,6 +37,7 @@ function insertMessage(db: Database.Database, sessionId: string, position: numbe
 }
 
 function downgradeUserProfiles(db: Database.Database): void {
+  removeTaskSchema(db)
   db.exec(`
     DROP TRIGGER IF EXISTS sessions_user_profile_required_insert;
     DROP TRIGGER IF EXISTS sessions_user_profile_required_update;
@@ -61,11 +64,11 @@ describe('chat database', () => {
     expect(first.pragma('foreign_keys', { simple: true })).toBe(1)
     expect(first.pragma('busy_timeout', { simple: true })).toBe(1000)
     expect(first.pragma('synchronous', { simple: true })).toBe(2)
-    expect(first.pragma('user_version', { simple: true })).toBe(13)
+    expect(first.pragma('user_version', { simple: true })).toBe(14)
     first.close()
 
     const second = openChatDatabase(filePath)
-    expect(second.pragma('user_version', { simple: true })).toBe(13)
+    expect(second.pragma('user_version', { simple: true })).toBe(14)
     expect(second.prepare('SELECT name, instructions FROM user_profiles').get()).toEqual({ name: 'Основной', instructions: '' })
     expect(second.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' ORDER BY name").all()).toEqual([
       { name: 'cleared_requests' },
@@ -83,13 +86,72 @@ describe('chat database', () => {
       { name: 'project_long_term_facts' },
       { name: 'projects' },
       { name: 'sessions' },
+      { name: 'task_approvals' },
+      { name: 'task_artifacts' },
+      { name: 'task_commands' },
+      { name: 'task_events' },
+      { name: 'task_tool_operations' },
+      { name: 'task_validations' },
+      { name: 'tasks' },
       { name: 'tool_executions' },
       { name: 'turns' },
       { name: 'user_profile_settings' },
       { name: 'user_profiles' },
+      { name: 'workflow_versions' },
+      { name: 'workflows' },
       { name: 'working_memory_entries' },
     ])
     second.close()
+  })
+
+  it('upgrades and reopens a version 13 file without deriving tasks from its history', async () => {
+    const filePath = await createDatabasePath()
+    const oldDb = openChatDatabase(filePath)
+    removeTaskSchema(oldDb)
+    oldDb.pragma('user_version = 13')
+    const profileId = 'profile-v13'
+    const sessionId = insertSession(oldDb)
+    const now = '2026-11-20T12:00:00.000Z'
+    const payload = JSON.stringify({ id: 'message-v13', role: 'user', parts: [{ type: 'text', text: 'Старое сообщение' }] })
+    oldDb.prepare(`
+      INSERT INTO user_profiles (id, name, name_key, instructions, revision, created_at, updated_at)
+      VALUES (?, 'Учёба', 'учёба', 'Поясняй шаги', 3, ?, ?)
+    `).run(profileId, now, now)
+    oldDb.prepare('UPDATE sessions SET user_profile_id = ? WHERE id = ?').run(profileId, sessionId)
+    insertMessage(oldDb, sessionId, 0, payload)
+    oldDb.prepare(`
+      INSERT INTO turns (id, session_id, request_id, position, status, model_id, agent_config_json, started_at, updated_at)
+      VALUES ('turn-v13', ?, 'request-v13', 0, 'completed', 'mock', '{}', ?, ?)
+    `).run(sessionId, now, now)
+    oldDb.prepare(`
+      INSERT INTO tool_executions (id, turn_id, step_index, tool_call_id, tool_name, status, input_json, created_at, updated_at)
+      VALUES ('tool-v13', 'turn-v13', 0, 'call-v13', 'rollDie', 'completed', '{}', ?, ?)
+    `).run(now, now)
+    oldDb.close()
+
+    for (let opening = 0; opening < 2; opening += 1) {
+      const db = openChatDatabase(filePath)
+      try {
+        expect(db.pragma('user_version', { simple: true })).toBe(14)
+        expect(db.pragma('foreign_key_check')).toEqual([])
+        expect(db.prepare('SELECT payload_json FROM messages WHERE session_id = ?').get(sessionId)).toEqual({ payload_json: payload })
+        expect(db.prepare('SELECT task_id FROM turns WHERE id = ?').get('turn-v13')).toEqual({ task_id: null })
+        expect(db.prepare('SELECT task_id, task_operation_id FROM tool_executions WHERE id = ?').get('tool-v13')).toEqual({
+          task_id: null, task_operation_id: null,
+        })
+        expect(db.prepare('SELECT * FROM tasks').all()).toEqual([])
+        expect(db.prepare('SELECT default_workflow_id FROM user_profiles WHERE id = ?').get(profileId)).toEqual({ default_workflow_id: null })
+        const profiles = createUserProfileRepository(db)
+        expect(profiles.getForTurn(sessionId)).toMatchObject({
+          id: profileId, name: 'Учёба', instructions: 'Поясняй шаги', revision: 3, defaultWorkflowId: null,
+        })
+        expect(profiles.list()).toContainEqual({
+          id: profileId, name: 'Учёба', revision: 3, createdAt: now, updatedAt: now, defaultWorkflowId: null,
+        })
+      } finally {
+        db.close()
+      }
+    }
   })
 
   it('adds model selection to existing version 1 sessions', async () => {
@@ -116,7 +178,7 @@ describe('chat database', () => {
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(14)
     expect(upgraded.prepare('SELECT model_id FROM sessions WHERE id = ?').get('old-session')).toEqual({ model_id: null })
     expect(upgraded.prepare(`SELECT s.user_profile_id, p.name FROM sessions s JOIN user_profiles p ON p.id = s.user_profile_id WHERE s.id = ?`).get('old-session'))
       .toMatchObject({ user_profile_id: expect.any(String), name: 'Основной' })
@@ -134,7 +196,7 @@ describe('chat database', () => {
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(14)
     expect(upgraded.pragma('table_info(turns)')).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'stop_reason' }),
     ]))
@@ -157,7 +219,7 @@ describe('chat database', () => {
     oldDb.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(14)
     expect(upgraded.prepare('SELECT stop_reason FROM turns WHERE id = ?').get(turnId)).toEqual({ stop_reason: 'timeout' })
     upgraded.prepare("UPDATE turns SET stop_reason = 'rate_limit' WHERE id = ?").run(turnId)
     upgraded.close()
@@ -187,7 +249,7 @@ describe('chat database', () => {
     db.close()
 
     const upgraded = openChatDatabase(filePath)
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(13)
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(14)
     expect(upgraded.prepare('SELECT payload_json FROM messages WHERE session_id = ?').get(sessionId)).toEqual({
       payload_json: JSON.stringify({ id: 'version-8-message', role: 'user', parts: [{ type: 'text', text: 'Старое сообщение' }] }),
     })

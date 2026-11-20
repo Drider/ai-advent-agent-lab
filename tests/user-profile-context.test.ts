@@ -10,6 +10,7 @@ describe('profile context instructions', () => {
       id: '17a377c9-2c9c-46bb-8946-b3b331f1cd23',
       name: 'Учёба',
       revision: 2,
+      defaultWorkflowId: null,
       instructions: 'Сначала дай короткий вывод.\nЗатем перечисли ограничения.',
     }
     const config = getAgentConfig(

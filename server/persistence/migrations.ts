@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 
-export const CHAT_SCHEMA_VERSION = 13
+export const CHAT_SCHEMA_VERSION = 14
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -416,6 +416,180 @@ export function migrateChatDatabase(db: Database.Database): void {
         BEGIN SELECT RAISE(ABORT, 'sessions.user_profile_id is required'); END;
         CREATE INDEX sessions_user_profile_idx ON sessions (user_profile_id, updated_at DESC);
       `)
+    }
+    if (currentVersion < 14) {
+      db.exec(`
+        CREATE TABLE workflows (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        ) STRICT;
+
+        CREATE TABLE workflow_versions (
+          workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+          version INTEGER NOT NULL CHECK (version >= 1),
+          definition_json TEXT NOT NULL CHECK (json_valid(definition_json)),
+          hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (workflow_id, version)
+        ) STRICT;
+
+        CREATE TRIGGER workflow_versions_immutable
+        BEFORE UPDATE ON workflow_versions
+        BEGIN SELECT RAISE(ABORT, 'published workflow versions are immutable'); END;
+
+        CREATE TRIGGER workflow_versions_prevent_replacement
+        BEFORE INSERT ON workflow_versions
+        WHEN EXISTS (
+          SELECT 1 FROM workflow_versions WHERE workflow_id = NEW.workflow_id AND version = NEW.version
+        )
+        BEGIN SELECT RAISE(ABORT, 'published workflow versions are immutable'); END;
+
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          task TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'done', 'cancelled')),
+          workflow_id TEXT,
+          workflow_version INTEGER,
+          node_id TEXT,
+          node_visit_id TEXT,
+          stage TEXT NOT NULL,
+          step TEXT NOT NULL,
+          expected_json TEXT NOT NULL CHECK (json_valid(expected_json)),
+          progress TEXT NOT NULL DEFAULT '',
+          revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+          result_artifact_id TEXT,
+          recovery TEXT NOT NULL DEFAULT 'clear' CHECK (recovery IN ('clear', 'needs_review')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK ((workflow_id IS NULL) = (workflow_version IS NULL)),
+          UNIQUE (session_id, id),
+          FOREIGN KEY (workflow_id, workflow_version) REFERENCES workflow_versions(workflow_id, version),
+          FOREIGN KEY (id, result_artifact_id) REFERENCES task_artifacts(task_id, id)
+        ) STRICT;
+
+        CREATE UNIQUE INDEX tasks_unfinished_session_idx
+          ON tasks (session_id) WHERE status IN ('active', 'paused');
+        CREATE INDEX tasks_session_created_idx ON tasks (session_id, created_at DESC, id DESC);
+
+        CREATE TABLE task_artifacts (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          key TEXT NOT NULL,
+          type TEXT NOT NULL CHECK (type IN ('plan', 'answers', 'dataset', 'implementation', 'report', 'result', 'note')),
+          version INTEGER NOT NULL CHECK (version >= 1),
+          hash TEXT NOT NULL,
+          content_json TEXT NOT NULL CHECK (json_valid(content_json)),
+          source_message_ids_json TEXT NOT NULL DEFAULT '[]'
+            CHECK (json_valid(source_message_ids_json) AND json_type(source_message_ids_json) = 'array'),
+          source_tool_call_ids_json TEXT NOT NULL DEFAULT '[]'
+            CHECK (json_valid(source_tool_call_ids_json) AND json_type(source_tool_call_ids_json) = 'array'),
+          created_at TEXT NOT NULL,
+          UNIQUE (task_id, key, version),
+          UNIQUE (task_id, id)
+        ) STRICT;
+
+        CREATE TRIGGER task_artifacts_immutable
+        BEFORE UPDATE ON task_artifacts
+        BEGIN SELECT RAISE(ABORT, 'task artifact versions are immutable'); END;
+
+        CREATE TRIGGER task_artifacts_prevent_replacement
+        BEFORE INSERT ON task_artifacts
+        WHEN EXISTS (SELECT 1 FROM task_artifacts WHERE id = NEW.id)
+          OR EXISTS (
+            SELECT 1 FROM task_artifacts WHERE task_id = NEW.task_id AND key = NEW.key AND version = NEW.version
+          )
+        BEGIN SELECT RAISE(ABORT, 'task artifact versions are immutable'); END;
+
+        CREATE TABLE task_approvals (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          artifact_id TEXT NOT NULL,
+          node_visit_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'obsolete')),
+          source_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (task_id, artifact_id) REFERENCES task_artifacts(task_id, id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX task_approvals_task_idx ON task_approvals (task_id);
+
+        CREATE TABLE task_validations (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          check_id TEXT NOT NULL,
+          checker_version INTEGER NOT NULL DEFAULT 1 CHECK (checker_version = 1),
+          node_visit_id TEXT NOT NULL,
+          inputs_json TEXT NOT NULL CHECK (json_valid(inputs_json) AND json_type(inputs_json) = 'array'),
+          outcome TEXT NOT NULL CHECK (outcome IN ('passed', 'failed', 'error')),
+          details_json TEXT NOT NULL CHECK (json_valid(details_json)),
+          created_at TEXT NOT NULL
+        ) STRICT;
+        CREATE INDEX task_validations_task_idx ON task_validations (task_id, node_visit_id, check_id);
+
+        CREATE TABLE task_commands (
+          operation_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          task_id TEXT,
+          actor TEXT NOT NULL CHECK (actor IN ('user', 'agent', 'system')),
+          input_hash TEXT NOT NULL,
+          phase TEXT NOT NULL CHECK (phase IN ('running', 'completed', 'rejected')),
+          receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          CHECK ((phase = 'running') = (receipt_json IS NULL)),
+          FOREIGN KEY (session_id, task_id) REFERENCES tasks(session_id, id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX task_commands_session_task_idx ON task_commands (session_id, task_id);
+
+        CREATE TABLE task_events (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          task_id TEXT,
+          operation_id TEXT REFERENCES task_commands(operation_id) ON DELETE CASCADE,
+          source_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+          source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+          actor TEXT NOT NULL CHECK (actor IN ('user', 'agent', 'system')),
+          type TEXT NOT NULL,
+          phase TEXT NOT NULL CHECK (phase IN ('completed', 'rejected')),
+          revision INTEGER CHECK (revision >= 0),
+          details_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json)),
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (session_id, task_id) REFERENCES tasks(session_id, id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX task_events_session_task_idx ON task_events (session_id, task_id, created_at);
+
+        CREATE TABLE task_tool_operations (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          node_visit_id TEXT CHECK (node_visit_id <> ''),
+          action_key TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          input_hash TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'uncertain')),
+          source_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+          path TEXT,
+          expected_hash TEXT,
+          observed_hash TEXT,
+          receipt_json TEXT CHECK (receipt_json IS NULL OR json_valid(receipt_json)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX task_tool_operations_action_idx
+          ON task_tool_operations (task_id, COALESCE(node_visit_id, ''), action_key);
+
+        ALTER TABLE user_profiles ADD COLUMN default_workflow_id TEXT REFERENCES workflows(id) ON DELETE SET NULL;
+      `)
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'turns'").get()) {
+        db.exec('ALTER TABLE turns ADD COLUMN task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL')
+      }
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_executions'").get()) {
+        db.exec(`
+          ALTER TABLE tool_executions ADD COLUMN task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL;
+          ALTER TABLE tool_executions ADD COLUMN task_operation_id TEXT REFERENCES task_tool_operations(id) ON DELETE SET NULL;
+        `)
+      }
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')

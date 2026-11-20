@@ -446,6 +446,7 @@ export function createSessionRepository(db: Database.Database) {
         id: userProfile.id,
         name: userProfile.name,
         revision: userProfile.revision,
+        defaultWorkflowId: userProfile.defaultWorkflowId,
         createdAt: userProfile.createdAt,
         updatedAt: userProfile.updatedAt,
       },

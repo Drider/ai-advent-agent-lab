@@ -2,6 +2,7 @@ export interface UserProfileSummary {
   id: string
   name: string
   revision: number
+  defaultWorkflowId: string | null
   createdAt: string
   updatedAt: string
 }
@@ -14,6 +15,7 @@ export interface UserProfileSnapshot {
   id: string
   name: string
   revision: number
+  defaultWorkflowId: string | null
   instructions: string
 }
 

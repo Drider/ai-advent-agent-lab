@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS } from '../shared/chat'
+import type { UserProfileSnapshot } from '../shared/user-profile'
 import { getAgentConfig } from '../server/agent/chat-agent'
 import { openChatDatabase } from '../server/persistence/db'
 import { createSessionRepository } from '../server/persistence/session-repository'
@@ -31,7 +32,7 @@ describe('user profile turn snapshots', () => {
     const session = createSessionRepository(db).createSession()
     const profile = profiles.create({ name: 'Кратко', instructions: 'Отвечай двумя предложениями' })
     profiles.selectForSession(session.id, profile.id)
-    const createAgentConfig = (snapshot: { id: string; name: string; revision: number; instructions: string }) =>
+    const createAgentConfig = (snapshot: UserProfileSnapshot) =>
       getAgentConfig(DEFAULT_COMPACTION_SETTINGS, DEFAULT_CONTEXT_STRATEGY_SETTINGS, snapshot)
 
     const first = startMemoryAwareTurn(db, {
@@ -74,7 +75,7 @@ describe('user profile turn snapshots', () => {
     const session = createSessionRepository(db).createSession()
     const profile = profiles.create({ name: 'Много инструкций', instructions: 'x'.repeat(16_000) })
     profiles.selectForSession(session.id, profile.id)
-    const createAgentConfig = (snapshot: { id: string; name: string; revision: number; instructions: string }) =>
+    const createAgentConfig = (snapshot: UserProfileSnapshot) =>
       getAgentConfig({ enabled: false, messageThreshold: 20, contextWindowTokens: 10_000 }, DEFAULT_CONTEXT_STRATEGY_SETTINGS, snapshot)
 
     expect(() => startMemoryAwareTurn(db, {

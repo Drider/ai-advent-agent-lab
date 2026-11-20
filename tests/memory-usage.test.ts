@@ -1,3 +1,4 @@
+import { removeTaskSchema } from './helpers/chat-db'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openChatDatabase } from '../server/persistence/db'
 import { createProjectRepository } from '../server/persistence/project-repository'
@@ -93,6 +94,7 @@ describe('memory usage events', () => {
       ALTER TABLE sessions DROP COLUMN user_profile_id;
       DROP TABLE user_profiles;
     `)
+    removeTaskSchema(db)
     db.pragma('user_version = 11')
 
     migrateChatDatabase(db)
