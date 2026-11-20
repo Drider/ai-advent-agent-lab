@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openChatDatabase } from '../server/persistence/db'
 import { createSessionRepository } from '../server/persistence/session-repository'
 import { createTaskService } from '../server/tasks/commands'
-import type { TaskActorContext, TaskCommandEnvelope, TaskSnapshot } from '../shared/task'
+import type { JsonValue, TaskActorContext, TaskCommandEnvelope, TaskSnapshot } from '../shared/task'
 
 const now = '2026-11-20T12:00:00.000Z'
 const pause: TaskCommandEnvelope = { operationId: 'pause', expectedRevision: 0, command: { type: 'pause' } }
@@ -82,6 +82,54 @@ describe('transactional task commands', () => {
     expect(service.create({ sessionId: user.sessionId, operationId: 'create', task: 'Отчёт' }, user))
       .toMatchObject({ ok: false, error: { code: 'OPERATION_CONFLICT' }, task: null })
     expect(db.prepare('SELECT id FROM tasks').all()).toHaveLength(0)
+  })
+
+  it('replays a turn reservation before checking the now-running session', async () => {
+    await service.apply(task.id, { operationId: 'cancel-before-reservation', expectedRevision: 0, command: { type: 'cancel' } }, user)
+    const actor = { ...user, role: 'system' } as const
+    const request = { sessionId: user.sessionId, kind: 'message', requestId: 'turn-request', messageText: 'Следующая задача' } as const
+    const reserved = service.reserveForTurn(request, actor)
+    expect(reserved).toMatchObject({ task: 'Следующая задача' })
+    db.prepare(`
+      INSERT INTO turns (id, task_id, session_id, request_id, position, status, model_id, agent_config_json, started_at, updated_at)
+      VALUES ('running-turn', ?, ?, ?, 0, 'running', 'mock', '{}', ?, ?),
+             ('legacy-turn', NULL, ?, 'legacy-turn', 1, 'interrupted', 'mock', '{}', ?, ?)
+    `).run(reserved?.id, user.sessionId, request.requestId, now, now, user.sessionId, now, now)
+    expect(service.reserveForTurn(request, actor)).toEqual(reserved)
+  })
+
+  it('compares a continuation against a stored message reservation ID', async () => {
+    await service.apply(task.id, { operationId: 'cancel-before-reservation', expectedRevision: 0, command: { type: 'cancel' } }, user)
+    const actor = { ...user, role: 'system' } as const
+    const request = { sessionId: user.sessionId, kind: 'message', requestId: 'turn-request', messageText: 'Следующая задача' } as const
+    service.reserveForTurn(request, actor)
+    db.prepare(`
+      INSERT INTO turns (id, session_id, request_id, position, status, model_id, agent_config_json, started_at, updated_at)
+      VALUES ('legacy-turn', ?, 'legacy-turn', 0, 'interrupted', 'mock', '{}', ?, ?)
+    `).run(user.sessionId, now, now)
+    expect(() => service.reserveForTurn({ ...request, kind: 'continue', sourceTurnId: 'legacy-turn' }, actor))
+      .toThrow(expect.objectContaining({ code: 'OPERATION_CONFLICT' }))
+  })
+
+  it('validates artifact depth independently and persists a replayable rejection', async () => {
+    const deepest = Array.from({ length: 20 }).reduce<JsonValue>(content => ({ child: content }), 'value')
+    const command = { type: 'submit_artifact', key: 'report', sourceMessageIds: [] as string[], sourceToolCallIds: [] as string[] } as const
+    const invalid: TaskCommandEnvelope = {
+      operationId: 'deep-artifact', expectedRevision: 0, command: {
+        ...command, content: { child: deepest },
+      },
+    }
+    const rejected = await service.apply(task.id, invalid, user)
+    expect(rejected).toMatchObject({ ok: false, task, error: { code: 'INVALID_INPUT' } })
+    expect(db.prepare("SELECT phase FROM task_commands WHERE operation_id = 'deep-artifact'").get())
+      .toEqual({ phase: 'rejected' })
+
+    expect(await service.apply(task.id, {
+      operationId: 'bounded-artifact', expectedRevision: 0, command: {
+        ...command, content: deepest,
+      },
+    }, user)).toMatchObject({ ok: true, task: { revision: 1 } })
+    expect(await service.apply(task.id, invalid, user)).toEqual(rejected)
   })
 
   it('rolls back result, status and receipt when inserting the event fails', async () => {

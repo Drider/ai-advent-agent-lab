@@ -279,11 +279,13 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
         taskId, expectedRevision, turnId: actor.turnId ?? null,
         command: Object.fromEntries(Object.entries(command).filter(([, value]) => value !== undefined)),
       }
-      assertJsonValue(input)
+      // Hash JSON data before enforcing artifact-specific constraints, so invalid artifacts get durable receipts.
+      assertJsonValue(input, [], true)
       inputHash = hash(canonicalJson(input))
       const replay = checkReplay(operationId, taskId, actor, inputHash)
       if (replay) return replay
     } catch (error) {
+      if (error instanceof RangeError) return failure(new TaskError('INVALID_INPUT', 'Command input cannot be serialized'))
       if (!(error instanceof TaskError)) throw error
       return failure(error)
     }
@@ -334,34 +336,40 @@ export function createTaskService(db: Database.Database, options: { now?: () => 
     if (actor.role !== 'system' || actor.sessionId !== sessionId || actor.turnId !== undefined || !requestId.trim()) {
       reject('INVALID_INPUT', 'Turn reservation requires the system context of the session')
     }
-    if (repository.isCleared(requestId)) reject('OPERATION_CONFLICT', 'Request was cleared from history')
-    if (kind === 'continue') {
-      checkSession(sessionId)
-      const source = input.sourceTurnId === undefined ? undefined : repository.getTurn(input.sourceTurnId, sessionId)
-      if (!source) reject('NOT_FOUND', 'Source turn was not found')
-      if (source.task_id === null) return null
-      const task = getOwned(source.task_id, sessionId)
-      if (!task) reject('NOT_FOUND', 'Task was not found')
-      checkTurnStart(sessionId, task)
-      requireActive(task)
-      return task
+    const inputHash = hash(canonicalJson({
+      type: 'reserve', kind, sourceTurnId: input.sourceTurnId ?? null,
+      messageText: input.messageText, workflow: input.workflow ?? null,
+    }))
+    const replay = checkReplay(requestId, null, actor, inputHash)
+    if (replay) {
+      if (!replay.ok) reject(replay.error.code, replay.error.message)
+      return replay.task
     }
 
     const task = repository.getUnfinished(sessionId)
     checkTurnStart(sessionId, task)
+    if (kind === 'continue') {
+      const source = input.sourceTurnId === undefined ? undefined : repository.getTurn(input.sourceTurnId, sessionId)
+      if (!source) reject('NOT_FOUND', 'Source turn was not found')
+      if (source.task_id === null) return null
+      const continued = getOwned(source.task_id, sessionId)
+      if (!continued) reject('NOT_FOUND', 'Task was not found')
+      requireActive(continued)
+      return continued
+    }
+
     const goal = input.messageText.trim().slice(0, maxGoalLength)
-    const inputHash = hash(canonicalJson({ type: 'reserve', messageText: input.messageText, workflow: input.workflow ?? null }))
-    const replay = checkReplay(requestId, null, actor, inputHash)
-    if (replay?.ok) return replay.task
     if (!task) {
       const created = startTask(sessionId, goal, input.workflow, now())
       accept(requestId, actor, inputHash, created, 'created')
       return created
     }
     requireActive(task)
-    if (goal && !task.workflowId && task.expected.actor === 'user' && task.expected.kind === 'input') {
+    const waitingForInput = !task.workflowId && task.expected.actor === 'user' && task.expected.kind === 'input'
+    const hasTemporaryGoal = task.task === emptyGoal
+    if (goal && (hasTemporaryGoal || waitingForInput)) {
       repository.update(task.id, task.revision, {
-        ...task, task: task.task === emptyGoal ? goal : task.task, expected: agentResult,
+        ...task, task: hasTemporaryGoal ? goal : task.task, expected: waitingForInput ? agentResult : task.expected,
         resultArtifactId: task.result?.id ?? null, updatedAt: now(),
       })
       const updated = repository.get(task.id)!

@@ -121,7 +121,11 @@ export function assertWorkflowSize(source: string): void {
   }
 }
 
-export function assertJsonValue(value: unknown, path: (string | number)[] = []): asserts value is JsonValue {
+export function assertJsonValue(
+  value: unknown,
+  path: (string | number)[] = [],
+  forHash = false,
+): asserts value is JsonValue {
   function reject(message: string, at = path): never {
     throw new WorkflowSchemaError([{ path: workflowFieldPath(at), message }])
   }
@@ -129,7 +133,7 @@ export function assertJsonValue(value: unknown, path: (string | number)[] = []):
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return
   if (typeof value === 'number' && Number.isFinite(value)) return
   if (typeof value !== 'object') reject('Expected a JSON value with finite numbers')
-  if (path.length >= MAX_WORKFLOW_DEPTH) {
+  if (!forHash && path.length >= MAX_WORKFLOW_DEPTH) {
     reject(`Workflow must have at most ${MAX_WORKFLOW_DEPTH} levels of nesting`)
   }
 
@@ -137,9 +141,9 @@ export function assertJsonValue(value: unknown, path: (string | number)[] = []):
     if (Reflect.ownKeys(value).length !== value.length + 1) reject('Expected a dense JSON array')
     for (let index = 0; index < value.length; index++) {
       const property = Object.getOwnPropertyDescriptor(value, index)
-      const field = [...path, index]
+      const field = forHash ? path : [...path, index]
       if (!property?.enumerable || !('value' in property)) reject('Expected a JSON array entry', field)
-      assertJsonValue(property.value, field)
+      assertJsonValue(property.value, field, forHash)
     }
     return
   }
@@ -148,11 +152,11 @@ export function assertJsonValue(value: unknown, path: (string | number)[] = []):
   if (prototype !== Object.prototype && prototype !== null) reject('Expected a JSON object')
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string') reject('JSON object keys must be strings')
-    const field = [...path, key]
-    if (forbiddenKeys.has(key)) reject('This key is forbidden', field)
+    const field = forHash ? path : [...path, key]
+    if (!forHash && forbiddenKeys.has(key)) reject('This key is forbidden', field)
     const property = Object.getOwnPropertyDescriptor(value, key)!
     if (!property.enumerable || !('value' in property)) reject('Expected a JSON data property', field)
-    assertJsonValue(property.value, field)
+    assertJsonValue(property.value, field, forHash)
   }
 }
 

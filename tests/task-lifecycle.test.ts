@@ -134,19 +134,26 @@ describe('basic task lifecycle', () => {
       contextExports: [],
     })
     const creation = service.create({
-      sessionId: user.sessionId, task: 'Отчёт', operationId: 'create-pinned',
+      sessionId: user.sessionId, task: '', operationId: 'create-pinned',
       workflow: { id: version.workflowId, version: version.version },
     }, user)
     expect(creation).toMatchObject({
       ok: true,
       task: {
         workflowId: version.workflowId, workflowVersion: 1, nodeId: 'done', nodeVisitId: expect.any(String),
-        stage: 'review', step: 'Итог', expected,
+        task: 'Новая задача', stage: 'review', step: 'Итог', expected,
       },
     })
     if (!creation.ok) throw new Error(creation.error.code)
     expect(await apply(creation.task.id, { type: 'complete_basic' })).toMatchObject({
       ok: false, error: { code: 'TRANSITION_NOT_ALLOWED' }, task: creation.task,
+    })
+    const reserved = service.reserveForTurn({
+      sessionId: user.sessionId, kind: 'message', requestId: 'first-message', messageText: 'Отчёт за ноябрь',
+    }, { ...user, role: 'system' })
+    expect(reserved).toMatchObject({
+      task: 'Отчёт за ноябрь', revision: 1, nodeId: 'done', nodeVisitId: creation.task.nodeVisitId,
+      workflowId: version.workflowId, workflowVersion: 1, stage: 'review', step: 'Итог', expected,
     })
   })
 
@@ -189,6 +196,22 @@ describe('basic task lifecycle', () => {
     `).run(task.id, now, now)
     expect(service.create({ sessionId: user.sessionId, task: 'Другая задача', operationId: 'blocked' }, user))
       .toMatchObject({ ok: false, error: { code: 'RECOVERY_REVIEW_REQUIRED' } })
+  })
+
+  it('blocks a fresh legacy continuation when the session has unresolved tool effects', () => {
+    const task = create()
+    const { sessionId } = user
+    db.prepare(`
+      INSERT INTO turns (id, session_id, request_id, position, status, model_id, agent_config_json, started_at, updated_at)
+      VALUES ('old-turn', ?, 'old-turn', 0, 'interrupted', 'mock', '{}', ?, ?)
+    `).run(sessionId, now, now)
+    db.prepare(`
+      INSERT INTO task_tool_operations (id, task_id, action_key, tool_name, input_hash, status, created_at, updated_at)
+      VALUES ('pending', ?, 'write', 'write_file', 'hash', 'uncertain', ?, ?)
+    `).run(task.id, now, now)
+    expect(() => service.reserveForTurn({
+      sessionId, kind: 'continue', requestId: 'legacy', sourceTurnId: 'old-turn', messageText: '',
+    }, { ...user, role: 'system' })).toThrow(expect.objectContaining({ code: 'RECOVERY_REVIEW_REQUIRED' }))
   })
 
   it('reserves a normal message for the unfinished basic task and never creates a task for legacy continuation', () => {
