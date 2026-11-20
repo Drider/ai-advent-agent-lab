@@ -121,7 +121,7 @@ export function assertWorkflowSize(source: string): void {
   }
 }
 
-function assertJsonValue(value: unknown, path: (string | number)[] = []): asserts value is JsonValue {
+export function assertJsonValue(value: unknown, path: (string | number)[] = []): asserts value is JsonValue {
   function reject(message: string, at = path): never {
     throw new WorkflowSchemaError([{ path: workflowFieldPath(at), message }])
   }
@@ -239,7 +239,7 @@ function graphIssues(definition: WorkflowDefinition): WorkflowSchemaIssue[] {
   return issues
 }
 
-function canonicalJson(value: JsonValue | WorkflowDefinition): string {
+export function canonicalJson(value: JsonValue | WorkflowDefinition): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   const entries = Object.entries(value).sort(([left], [right]) => left < right ? -1 : Number(left > right))
