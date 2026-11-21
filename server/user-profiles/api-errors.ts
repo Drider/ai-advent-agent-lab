@@ -7,7 +7,7 @@ export function toUserProfileHttpError(error: unknown): Error {
   }
   const statusCode = error.code === 'NOT_FOUND'
     ? 404
-    : error.code === 'NAME_CONFLICT' || error.code === 'REVISION_CONFLICT' || error.code === 'SESSION_RUNNING' || error.code === 'TURN_NOT_ACTIVE'
+    : error.code === 'NAME_CONFLICT' || error.code === 'REVISION_CONFLICT' || error.code === 'SESSION_RUNNING' || error.code === 'TURN_NOT_ACTIVE' || error.code === 'DEFAULT_PROFILE' || error.code === 'PROFILE_IN_USE'
       ? 409
       : 400
   return createError({ statusCode, statusMessage: error.message, data: { code: error.code } })

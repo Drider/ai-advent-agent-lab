@@ -3,6 +3,7 @@ import { createApp, createRouter, toWebHandler } from 'h3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { migrateChatDatabase } from '../server/persistence/migrations'
 import { createSessionRepository } from '../server/persistence/session-repository'
+import { createUserProfileRepository } from '../server/persistence/user-profile-repository'
 
 const databaseState = vi.hoisted((): { db: unknown } => ({ db: undefined }))
 
@@ -12,6 +13,7 @@ import listProfiles from '../server/api/user-profiles/index.get'
 import createProfile from '../server/api/user-profiles/index.post'
 import getProfile from '../server/api/user-profiles/[id].get'
 import updateProfile from '../server/api/user-profiles/[id].patch'
+import deleteProfile from '../server/api/user-profiles/[id].delete'
 import setDefaultProfile from '../server/api/user-profiles/default.patch'
 import selectSessionProfile from '../server/api/sessions/[id]/user-profile.patch'
 import getSession from '../server/api/sessions/[id].get'
@@ -30,6 +32,7 @@ beforeEach(() => {
     .post('/user-profiles', createProfile)
     .get('/user-profiles/:id', getProfile)
     .patch('/user-profiles/:id', updateProfile)
+    .delete('/user-profiles/:id', deleteProfile)
     .patch('/user-profiles/default', setDefaultProfile)
     .patch('/sessions/:id/user-profile', selectSessionProfile)
     .get('/sessions/:id', getSession)
@@ -79,6 +82,24 @@ describe('user profile API', () => {
     const newSession = createSessionRepository(db).createSession()
     expect((await json(await request(`/sessions/${originalSession.id}`))).userProfileId).not.toBe(created.id)
     expect((await json(await request(`/sessions/${newSession.id}`))).userProfileId).toBe(created.id)
+  })
+
+  it('deletes an unused profile and rejects deleting the default or an assigned profile', async () => {
+    const removable = await json(await request('/user-profiles', body('POST', { name: 'Удаляемый', instructions: '' })))
+    const deletedResponse = await request(`/user-profiles/${removable.id}`, { method: 'DELETE' })
+
+    expect(deletedResponse.status).toBe(200)
+    expect(deletedResponse.headers.get('cache-control')).toContain('no-store')
+    expect(await json(deletedResponse)).toEqual({ id: removable.id, deleted: true })
+    expect((await request(`/user-profiles/${removable.id}`)).status).toBe(404)
+
+    const defaultId = (await json(await request('/user-profiles'))).defaultProfileId
+    expect((await request(`/user-profiles/${defaultId}`, { method: 'DELETE' })).status).toBe(409)
+
+    const assigned = await json(await request('/user-profiles', body('POST', { name: 'Назначенный', instructions: '' })))
+    const session = createSessionRepository(db).createSession()
+    createUserProfileRepository(db).selectForSession(session.id, assigned.id)
+    expect((await request(`/user-profiles/${assigned.id}`, { method: 'DELETE' })).status).toBe(409)
   })
 
   it('selects a profile for one idle session and rejects selection during an active turn', async () => {

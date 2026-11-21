@@ -5,6 +5,7 @@ import { computed, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
 import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 import type { UserProfileSummary } from '~/shared/user-profile'
+import { parseTaskCommand } from '~/shared/task'
 
 const props = defineProps<{
   session: SessionDetail
@@ -18,6 +19,7 @@ const props = defineProps<{
   showCost: boolean
   showDetailedStatistics?: boolean
   operationError?: string | null
+  taskError?: string | null
   historyClearPending?: boolean
   userProfiles: UserProfileSummary[]
   userProfilesLoading?: boolean
@@ -32,6 +34,14 @@ const emit = defineEmits<{
   createBranch: [messageId: string]
   saveMemory: [payload: { text: string; source: { sourceSessionId: string; sourceMessageId: string } }]
   selectProfile: [profileId: string]
+  taskStart: [payload: { templateId: string; goal: string }]
+  taskAction: [payload: {
+    action: 'approve' | 'reject' | 'pause' | 'resume' | 'cancel'
+    pendingTransitionId?: string
+    expectedRevision?: number
+    expectedProfileName?: string
+  }]
+  taskAnswers: [payload: { answers: Record<string, string>; expectedRevision: number }]
 }>()
 
 const draft = shallowRef('')
@@ -39,6 +49,7 @@ const activeRequestId = shallowRef<string | null>(null)
 const lastKnownTurnId = shallowRef(props.session.lastTurn?.id ?? null)
 const lastTurnStatus = shallowRef<ChatSessionStatus>(props.session.lastTurn?.status ?? props.session.status)
 const continuationError = shallowRef<string | null>(null)
+const taskCommandError = shallowRef<string | null>(null)
 let pendingSend: { text: string; baselineIds: Set<string> } | null = null
 let chatMessages: { value: ChatUIMessage[] } | undefined
 
@@ -195,6 +206,37 @@ async function handleSubmit(event?: Event): Promise<void> {
   if (!text || isBusy.value || props.historyClearPending) return
   clearError()
   continuationError.value = null
+  taskCommandError.value = null
+  if (/^\/task(\s|$)/u.test(text)) {
+    const command = parseTaskCommand(text)
+    draft.value = ''
+    if (!command.ok) {
+      taskCommandError.value = command.error
+      return
+    }
+    if (command.action === 'start') {
+      emit('taskStart', { templateId: command.templateId, goal: command.goal })
+    } else {
+      const pending = command.action === 'approve' || command.action === 'reject'
+        ? props.session.task?.pendingTransition
+        : undefined
+      if ((command.action === 'approve' || command.action === 'reject') && pending == null) {
+        taskCommandError.value = 'Нет перехода, ожидающего подтверждения.'
+        return
+      }
+      emit('taskAction', {
+        action: command.action,
+        ...(pending == null ? {} : {
+          pendingTransitionId: pending.id,
+          expectedRevision: props.session.task!.revision,
+          ...(command.action === 'approve' && props.session.task!.profilePreview
+            ? { expectedProfileName: props.session.task!.profilePreview.name }
+            : {}),
+        }),
+      })
+    }
+    return
+  }
   pendingSend = { text, baselineIds: new Set(messages.value.map(message => message.id)) }
   draft.value = ''
   try {
@@ -245,6 +287,22 @@ async function handleContinue(): Promise<void> {
   } catch (caughtError) {
     continuationError.value = caughtError instanceof Error ? caughtError.message : 'Продолжение недоступно'
     lastTurnStatus.value = 'failed'
+    emit('updated')
+  }
+}
+
+async function handleContinueTask(): Promise<void> {
+  if (isBusy.value || props.historyClearPending) return
+  const text = 'Продолжи задачу с текущего этапа. Сначала проверь актуальное состояние задачи.'
+  clearError()
+  continuationError.value = null
+  taskCommandError.value = null
+  pendingSend = { text, baselineIds: new Set(messages.value.map(message => message.id)) }
+  try {
+    await sendMessage({ text })
+  } catch (caughtError) {
+    pendingSend = null
+    continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось продолжить задачу.'
     emit('updated')
   }
 }
@@ -320,6 +378,16 @@ function dismissError(): void {
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
       </div>
     </header>
+
+    <TaskPanel
+      :task="props.session.task"
+      :busy="isBusy"
+      :error="taskCommandError ?? props.taskError"
+      @start="emit('taskStart', $event)"
+      @action="emit('taskAction', $event)"
+      @save-answers="emit('taskAnswers', $event)"
+      @continue-task="handleContinueTask"
+    />
 
     <details v-if="props.contextStrategy.strategy === 'sticky_facts' && Object.keys(props.session.stickyFacts).length > 0" class="sticky-facts-panel">
       <summary>Sticky Facts · {{ Object.keys(props.session.stickyFacts).length }} фактов</summary>

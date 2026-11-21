@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 
-export const CHAT_SCHEMA_VERSION = 13
+export const CHAT_SCHEMA_VERSION = 17
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -415,6 +416,90 @@ export function migrateChatDatabase(db: Database.Database): void {
         BEFORE UPDATE OF user_profile_id ON sessions WHEN NEW.user_profile_id IS NULL
         BEGIN SELECT RAISE(ABORT, 'sessions.user_profile_id is required'); END;
         CREATE INDEX sessions_user_profile_idx ON sessions (user_profile_id, updated_at DESC);
+      `)
+    }
+    if (currentVersion < 14) db.exec(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        template_id TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        step TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'done', 'cancelled')),
+        pending_stage TEXT,
+        pending_summary TEXT,
+        artifacts_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(artifacts_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_one_open_per_session
+        ON tasks (session_id) WHERE status IN ('active', 'paused');
+    `)
+    if (currentVersion < 15 && !db.prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'answers_json'").get()) {
+      db.exec("ALTER TABLE tasks ADD COLUMN answers_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(answers_json))")
+    }
+    if (currentVersion < 16) {
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'revision'").get()) {
+        db.exec('ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)')
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_transitions (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          from_stage TEXT NOT NULL,
+          to_stage TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          requested_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          outcome TEXT CHECK (outcome IS NULL OR outcome IN ('approved', 'rejected', 'expired', 'cancelled')),
+          resolved_at TEXT,
+          CHECK ((outcome IS NULL AND resolved_at IS NULL) OR (outcome IS NOT NULL AND resolved_at IS NOT NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS task_transitions_one_pending_idx
+          ON task_transitions (task_id) WHERE outcome IS NULL;
+        CREATE INDEX IF NOT EXISTS task_transitions_task_requested_idx
+          ON task_transitions (task_id, requested_at DESC, id DESC);
+      `)
+      const migratedAt = new Date().toISOString()
+      const expiresAt = new Date(Date.parse(migratedAt) + 7 * 24 * 60 * 60 * 1_000).toISOString()
+      const pending = db.prepare(`
+        SELECT id, stage, pending_stage, pending_summary
+        FROM tasks
+        WHERE pending_stage IS NOT NULL AND pending_summary IS NOT NULL
+      `).all() as Array<{ id: string; stage: string; pending_stage: string; pending_summary: string }>
+      const insertTransition = db.prepare(`
+        INSERT INTO task_transitions
+          (id, task_id, from_stage, to_stage, summary, requested_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const row of pending) {
+        insertTransition.run(randomUUID(), row.id, row.stage, row.pending_stage, row.pending_summary, migratedAt, expiresAt)
+      }
+    }
+    if (currentVersion < 17) {
+      const transitionColumns = db.prepare("SELECT name FROM pragma_table_info('task_transitions')").all() as Array<{ name: string }>
+      if (!transitionColumns.some(column => column.name === 'requested_revision')) {
+        db.exec('ALTER TABLE task_transitions ADD COLUMN requested_revision INTEGER NOT NULL DEFAULT 0 CHECK (requested_revision >= 0)')
+      }
+      if (!transitionColumns.some(column => column.name === 'resolved_revision')) {
+        db.exec('ALTER TABLE task_transitions ADD COLUMN resolved_revision INTEGER CHECK (resolved_revision IS NULL OR resolved_revision >= 0)')
+      }
+      if (!transitionColumns.some(column => column.name === 'repeat_count')) {
+        db.exec('ALTER TABLE task_transitions ADD COLUMN repeat_count INTEGER NOT NULL DEFAULT 0 CHECK (repeat_count >= 0)')
+      }
+      db.exec(`
+        UPDATE task_transitions
+        SET requested_revision = MAX(
+          COALESCE((SELECT revision FROM tasks WHERE tasks.id = task_transitions.task_id), 0)
+            - CASE WHEN outcome IS NULL THEN 0 ELSE 1 END,
+          0
+        ),
+        resolved_revision = CASE
+          WHEN outcome IS NULL THEN NULL
+          ELSE COALESCE((SELECT revision FROM tasks WHERE tasks.id = task_transitions.task_id), 0)
+        END
+        WHERE requested_revision = 0;
       `)
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)

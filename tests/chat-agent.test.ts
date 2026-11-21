@@ -16,7 +16,7 @@ import {
 import { MockLanguageModelV3 } from 'ai/test'
 import { z } from 'zod'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createChatAgent, MAX_AGENT_STEPS, streamChatAgent } from '../server/agent/chat-agent'
+import { buildAgentInstructions, createChatAgent, MAX_AGENT_STEPS, streamChatAgent } from '../server/agent/chat-agent'
 import { openChatDatabase } from '../server/persistence/db'
 import { createSessionRepository } from '../server/persistence/session-repository'
 import { createTurnRepository } from '../server/persistence/turn-repository'
@@ -203,6 +203,30 @@ function createTestFileTools() {
 }
 
 describe('chat agent', () => {
+  it('includes onboarding questions and saved answers in task instructions', () => {
+    const instructions = buildAgentInstructions(undefined, false, {
+      id: 'task-1',
+      sessionId: 'session-1',
+      templateId: 'onboarding',
+      goal: 'Знакомство',
+      stage: 'interview',
+      step: '',
+      status: 'active',
+      artifacts: {},
+      answers: { name: 'Игорь' },
+      createdAt: '',
+      updatedAt: '',
+    })
+
+    expect(instructions).toContain('Как к вам обращаться?')
+    expect(instructions).toContain('Игорь')
+    expect(instructions.match(/not answered/g)?.length).toBe(4)
+    expect(instructions).toContain('applied=false')
+    expect(instructions).toContain('get_task_state')
+    expect(instructions).toContain('confirmationHint')
+    expect(instructions).toContain('Do not invent or construct a confirmation command')
+  })
+
   it('includes the full user profile in every model step without adding it to chat history', async () => {
     const profileSnapshot = {
       id: randomUUID(),

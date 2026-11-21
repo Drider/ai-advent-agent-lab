@@ -39,7 +39,7 @@ function toSummary(profile: UserProfile): UserProfileSummary {
 
 export class UserProfileError extends Error {
   constructor(
-    public readonly code: 'INVALID_INPUT' | 'NOT_FOUND' | 'NAME_CONFLICT' | 'REVISION_CONFLICT' | 'SESSION_RUNNING' | 'TURN_NOT_ACTIVE',
+    public readonly code: 'INVALID_INPUT' | 'NOT_FOUND' | 'NAME_CONFLICT' | 'REVISION_CONFLICT' | 'SESSION_RUNNING' | 'TURN_NOT_ACTIVE' | 'DEFAULT_PROFILE' | 'PROFILE_IN_USE',
     message: string,
   ) {
     super(message)
@@ -157,6 +157,18 @@ export function createUserProfileRepository(db: Database.Database) {
     return transaction.immediate()
   }
 
+  function remove(id: string): boolean {
+    const transaction = db.transaction(() => {
+      if (!get(id)) return false
+      if (getDefaultId() === id) throw new UserProfileError('DEFAULT_PROFILE', 'the default profile cannot be deleted')
+      if (db.prepare('SELECT 1 FROM sessions WHERE user_profile_id = ? LIMIT 1').get(id)) {
+        throw new UserProfileError('PROFILE_IN_USE', 'the profile is assigned to one or more sessions')
+      }
+      return db.prepare('DELETE FROM user_profiles WHERE id = ?').run(id).changes === 1
+    })
+    return transaction.immediate()
+  }
+
   function selectForSession(sessionId: string, profileId: string, options: { turnId?: string } = {}): UserProfile {
     const transaction = db.transaction(() => {
       const session = db.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as { status: string } | undefined
@@ -176,5 +188,5 @@ export function createUserProfileRepository(db: Database.Database) {
     return transaction.immediate()
   }
 
-  return { list, get, getDefault, getDefaultId, getForSession, getForTurn, create, update, setDefault, selectForSession }
+  return { list, get, getDefault, getDefaultId, getForSession, getForTurn, create, update, setDefault, delete: remove, selectForSession }
 }

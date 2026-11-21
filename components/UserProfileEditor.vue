@@ -6,6 +6,7 @@ const props = defineProps<{
   profile: UserProfile | null
   defaultProfileId: string
   saving?: boolean
+  deleting?: boolean
   settingDefault?: boolean
   saveError?: string | null
   conflictProfile?: UserProfile | null
@@ -15,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   save: [payload: { id: string; expectedRevision: number; name?: string; instructions?: string }]
   create: [payload: { name: string; instructions: string }]
+  delete: [profileId: string]
   setDefault: [profileId: string]
   reloadLatest: []
   dirtyChange: [dirty: boolean]
@@ -29,7 +31,7 @@ const instructionsError = computed(() => instructions.value.length > 16_000 ? '�
 const dirty = computed(() => props.profile
   ? name.value !== props.profile.name || instructions.value !== props.profile.instructions
   : name.value.length > 0 || instructions.value.length > 0)
-const canSave = computed(() => !nameError.value && !instructionsError.value && dirty.value && !props.saving)
+const canSave = computed(() => !nameError.value && !instructionsError.value && dirty.value && !props.saving && !props.deleting)
 
 function resetFields(): void {
   name.value = props.profile?.name ?? ''
@@ -82,10 +84,13 @@ function save(): void {
       <UButton color="neutral" :disabled="!canSave" :loading="props.saving" @click="save">
         {{ props.profile ? 'Сохранить изменения' : 'Создать профиль' }}
       </UButton>
-      <UButton v-if="props.profile && props.profile.id !== props.defaultProfileId" color="neutral" variant="soft" :loading="props.settingDefault" :disabled="props.settingDefault" @click="emit('setDefault', props.profile!.id)">
+      <UButton v-if="props.profile && props.profile.id !== props.defaultProfileId" color="neutral" variant="soft" :loading="props.settingDefault" :disabled="props.settingDefault || props.saving || props.deleting" @click="emit('setDefault', props.profile!.id)">
         Использовать по умолчанию
       </UButton>
       <span v-else-if="props.profile" class="profile-editor__default">Профиль используется по умолчанию для новых диалогов</span>
+      <UButton v-if="props.profile" color="error" variant="soft" icon="i-lucide-trash-2" :loading="props.deleting" :disabled="props.saving || props.settingDefault || props.deleting" @click="emit('delete', props.profile!.id)">
+        Удалить профиль
+      </UButton>
     </div>
 
     <p v-if="props.saveError" class="profile-editor__error" role="alert">{{ props.saveError }}</p>

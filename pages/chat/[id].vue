@@ -9,6 +9,7 @@ import { useMemory } from '~/composables/useMemory'
 import type { Project, MemorySource } from '~/shared/memory'
 import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
 import type { UserProfileSummary } from '~/shared/user-profile'
+import type { TaskSnapshot } from '~/shared/task'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -38,6 +39,7 @@ const session = shallowRef<SessionDetail | null>(null)
 const userProfiles = shallowRef<UserProfileSummary[]>([])
 const userProfilesLoading = shallowRef(false)
 const profileSelectionError = shallowRef<string | null>(null)
+const taskError = shallowRef<string | null>(null)
 const loading = shallowRef(true)
 const groupRefreshKey = shallowRef(0)
 const workspaceBusy = shallowRef(false)
@@ -119,6 +121,78 @@ async function handleSelectProfile(profileId: string): Promise<void> {
     }
   } catch (caughtError) {
     profileSelectionError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось выбрать профиль.'
+  }
+}
+
+async function handleTaskStart(payload: { templateId: string; goal: string }): Promise<void> {
+  const current = session.value
+  if (!current || workspaceBusy.value) return
+  taskError.value = null
+  try {
+    const result = await $fetch<{ task: TaskSnapshot }>(`/api/sessions/${current.id}/task`, {
+      method: 'POST',
+      body: payload,
+    })
+    if (session.value?.id === current.id) session.value = { ...current, task: result.task }
+  } catch (caughtError) {
+    taskError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось начать задачу.'
+  }
+}
+
+function isConflictError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const candidate = error as { status?: number; statusCode?: number; response?: { status?: number } }
+  return candidate.status === 409 || candidate.statusCode === 409 || candidate.response?.status === 409
+}
+
+async function handleTaskAction(payload: {
+  action: 'approve' | 'reject' | 'pause' | 'resume' | 'cancel'
+  pendingTransitionId?: string
+  expectedRevision?: number
+  expectedProfileName?: string
+}): Promise<void> {
+  const current = session.value
+  if (!current || workspaceBusy.value) return
+  taskError.value = null
+  try {
+    const result = await $fetch<{ task: TaskSnapshot }>(`/api/sessions/${current.id}/task`, {
+      method: 'PATCH',
+      body: {
+        action: payload.action,
+        ...(payload.pendingTransitionId === undefined ? {} : { pendingTransitionId: payload.pendingTransitionId }),
+        ...(payload.expectedRevision === undefined ? {} : { expectedRevision: payload.expectedRevision }),
+        ...(payload.expectedProfileName === undefined ? {} : { expectedProfileName: payload.expectedProfileName }),
+      },
+    })
+    if (session.value?.id === current.id) session.value = { ...current, task: result.task }
+    if (result.task.status === 'done') await handleUpdated()
+  } catch (caughtError) {
+    if (isConflictError(caughtError)) {
+      await loadSession()
+      taskError.value = 'Состояние задачи уже изменилось. Показаны свежие данные.'
+    } else {
+      taskError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось изменить состояние задачи.'
+    }
+  }
+}
+
+async function handleTaskAnswers(payload: { answers: Record<string, string>; expectedRevision: number }): Promise<void> {
+  const current = session.value
+  if (!current || workspaceBusy.value) return
+  taskError.value = null
+  try {
+    const result = await $fetch<{ task: TaskSnapshot }>(`/api/sessions/${current.id}/task-answers`, {
+      method: 'PATCH',
+      body: payload,
+    })
+    if (session.value?.id === current.id) session.value = { ...current, task: result.task }
+  } catch (caughtError) {
+    if (isConflictError(caughtError)) {
+      await loadSession()
+      taskError.value = 'Анкета уже изменилась. Показаны свежие ответы.'
+    } else {
+      taskError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось сохранить анкету.'
+    }
   }
 }
 
@@ -550,6 +624,7 @@ watch(sessionId, () => {
       :compaction-threshold="compactionThreshold"
       :context-strategy="contextStrategy"
       :operation-error="operationError"
+      :task-error="taskError"
       :history-clear-pending="historyClearPending"
       :user-profiles="userProfiles"
       :user-profiles-loading="userProfilesLoading"
@@ -561,6 +636,9 @@ watch(sessionId, () => {
       @create-branch="handleCreateBranch"
       @save-memory="handleSaveMemory"
       @select-profile="handleSelectProfile"
+      @task-start="handleTaskStart"
+      @task-action="handleTaskAction"
+      @task-answers="handleTaskAnswers"
     />
     <MemoryEntryForm
       :open="memoryFormOpen"

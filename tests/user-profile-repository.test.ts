@@ -62,6 +62,24 @@ describe('user profile repository', () => {
     expect(profiles.get(created.id)).toMatchObject({ name: 'Понятно', instructions: 'Объясняй подробно', revision: 1 })
   })
 
+  it('deletes unused profiles and protects the default and assigned profiles', () => {
+    const db = createDb()
+    const profiles = createUserProfileRepository(db)
+    const sessions = createSessionRepository(db)
+    const removable = profiles.create({ name: 'Удаляемый', instructions: '' })
+
+    expect(profiles.delete(removable.id)).toBe(true)
+    expect(profiles.get(removable.id)).toBeUndefined()
+    expect(profiles.delete(removable.id)).toBe(false)
+
+    expect(() => profiles.delete(profiles.getDefaultId())).toThrowError(expect.objectContaining({ code: 'DEFAULT_PROFILE' }))
+
+    const assigned = profiles.create({ name: 'Назначенный', instructions: '' })
+    const session = sessions.createSession()
+    profiles.selectForSession(session.id, assigned.id)
+    expect(() => profiles.delete(assigned.id)).toThrowError(expect.objectContaining({ code: 'PROFILE_IN_USE' }))
+  })
+
   it('uses a default for new sessions and only changes existing session selections explicitly', () => {
     const db = createDb()
     const profiles = createUserProfileRepository(db)

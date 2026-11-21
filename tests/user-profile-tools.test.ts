@@ -75,6 +75,21 @@ describe('user profile tools', () => {
     expect(createUserProfileRepository(db).get(created.profile.id)?.name).toBe('Коротко')
   })
 
+  it('requires listing a profile before deleting it', async () => {
+    const db = database()
+    const session = createSessionRepository(db).createSession()
+    const tools = createUserProfileTools({ db, sessionId: session.id, turnId: reserveTurn(db, session.id) })
+    const created = createUserProfileRepository(db).create({ name: 'Удаляемый', instructions: '' })
+
+    await expect(invoke(tools.delete_user_profile, { id: created.id })).resolves.toMatchObject({
+      deleted: false,
+      error: { code: 'NOT_LISTED' },
+    })
+    await invoke(tools.list_user_profiles)
+    await expect(invoke(tools.delete_user_profile, { id: created.id })).resolves.toMatchObject({ deleted: true, id: created.id })
+    expect(createUserProfileRepository(db).get(created.id)).toBeUndefined()
+  })
+
   it('binds selection to the server session and permits only its active turn', async () => {
     const db = database()
     const sessions = createSessionRepository(db)

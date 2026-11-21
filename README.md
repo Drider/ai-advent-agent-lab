@@ -47,8 +47,9 @@ npm run backup:chat
 - в чате можно создать проект и объединить в нём несколько диалогов с общей рабочей памятью;
 - по явной команде «сохрани в память» модель может записать факт в рабочую или долговременную память;
 - кнопка «Память» открывает страницу управления тремя слоями, статистикой и очисткой;
-- в шапке чата можно выбрать профиль предпочтений, а на странице «Профили» — создать его, изменить инструкции и назначить профиль для новых диалогов;
+- в шапке чата можно выбрать профиль предпочтений, а на странице «Профили» — создать, изменить или удалить неиспользуемый профиль и назначить профиль для новых диалогов;
 - прерванный ход показывает действие «Продолжить», а неопределённый побочный эффект переводит его в «Нужна проверка»;
+- панель задач фиксирует этапы, требует подтверждения переходов и блокирует `write_file` до реализации;
 - под ответом видны токены за ход и время работы; в левой панели можно включить подробную разбивку и оценку стоимости.
 
 Вызовы инструментов показаны компактными строками: нажмите на строку, чтобы увидеть аргументы и результат. Во время ответа можно остановить генерацию, а после ошибки — повторить запрос.
@@ -72,6 +73,14 @@ npm run backup:chat
 Профиль хранит дополнительные инструкции о предпочтительном стиле, формате и ограничениях. Он не относится к долговременной памяти: профиль целиком подключается к каждому ходу выбранного диалога и не сжимается вместе с историей. Один профиль можно назначить нескольким диалогам; новые диалоги получают текущий профиль по умолчанию. Выбор существующего диалога меняется в шапке чата, а библиотека редактируется на странице «Профили» (`/profiles`). Изменения профиля действуют со следующего сообщения во всех назначенных ему диалогах. Из чата агент может по явной просьбе показать, создать, отредактировать или выбрать профиль.
 
 Порядок работы в интерфейсе, правила применения изменений и HTTP API описаны в [документации по профилям](docs/user-profiles.md).
+
+## Жизненный цикл задач
+
+Задачу можно начать кнопкой в чате или командами `/task start …`. Агент работает
+только на текущем этапе и предлагает переход, а пользователь подтверждает его
+кнопкой или `/task approve`. Пауза переживает перезагрузку, утверждённые планы
+остаются в артефактах, а запись файлов доступна только на этапе реализации.
+Подробности, команды и HTTP API описаны в [документации по жизненному циклу задач](docs/task-lifecycle.md).
 
 ## Диагностические логи
 
@@ -123,6 +132,9 @@ node scripts/backup-chat-db.mjs \
 - [`server/tools/sessions`](server/tools/sessions/README.md) —
   `get_current_session`, `list_sessions`, `read_session_file` и
   `analyze_sessions` для JSON-логов диалогов.
+- [`server/tools/tasks`](server/tools/tasks/README.md) — `record_task_answer`,
+  `update_task_step` и `request_task_transition` для анкеты и управляемой работы
+  по этапам.
 
 У каждой группы есть `index.ts` как публичная точка входа и README с описанием,
 ограничениями и примерами.
@@ -195,6 +207,7 @@ cp /путь/к/report.pdf data/documents/report.pdf
 | Стратегии контекста и сжатие истории | [`server/context-compaction/`](server/context-compaction/), [`server/api/chat.post.ts`](server/api/chat.post.ts) |
 | Рабочая и долговременная память | [`pages/memory.vue`](pages/memory.vue), [`composables/useMemory.ts`](composables/useMemory.ts), [`server/memory/`](server/memory/), [`server/tools/memory/`](server/tools/memory/) |
 | Профили пользователя | [`pages/profiles.vue`](pages/profiles.vue), [`server/api/user-profiles/`](server/api/user-profiles/), [`server/persistence/user-profile-repository.ts`](server/persistence/user-profile-repository.ts), [`server/tools/user-profiles/`](server/tools/user-profiles/) |
+| Жизненный цикл задач | [`components/TaskPanel.vue`](components/TaskPanel.vue), [`shared/task.ts`](shared/task.ts), [`server/persistence/task-repository.ts`](server/persistence/task-repository.ts), [`server/tasks/onboarding.ts`](server/tasks/onboarding.ts), [`server/api/sessions/[id]/task.post.ts`](server/api/sessions/%5Bid%5D/task.post.ts) |
 | Инструменты агента | [`server/tools/`](server/tools/) — отдельные группы для файлов, кубика, сессий, памяти, профилей и конфигураций моделей |
 | Токены, стоимость и диагностические логи | [`server/agent/token-usage.ts`](server/agent/token-usage.ts), [`shared/chat.ts`](shared/chat.ts), [`components/ChatRequestMetrics.vue`](components/ChatRequestMetrics.vue), [`server/utils/run-logger.ts`](server/utils/run-logger.ts) |
 

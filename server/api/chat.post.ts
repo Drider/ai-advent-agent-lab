@@ -8,6 +8,7 @@ import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
 import { createSaveMemoryTool } from '../tools/memory'
 import { createModelConfigurationTools } from '../tools/model-configurations'
 import { createUserProfileTools } from '../tools/user-profiles'
+import { createTaskTools } from '../tools/tasks'
 import { getChatDatabase } from '../persistence/db'
 import { createDiceRollRepository } from '../persistence/dice-roll-repository'
 import { createSessionRepository } from '../persistence/session-repository'
@@ -74,17 +75,19 @@ export default defineEventHandler(async (event) => {
   let turnId: string
   let memorySnapshot: MemorySnapshot
   let profileSnapshot
+  let taskSnapshot
   let agentConfig: Record<string, unknown>
   try {
     const started = startMemoryAwareTurn(db, {
       request,
       modelId: chatConfig.modelId,
       agentConfig: getAgentConfig(compactionSettings, contextStrategy),
-      createAgentConfig: profile => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue'),
+      createAgentConfig: (profile, task) => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue', task),
     })
     turnId = started.turnId
     memorySnapshot = started.snapshot
     profileSnapshot = started.profileSnapshot
+    taskSnapshot = started.taskSnapshot
     agentConfig = started.agentConfig
   } catch (error) {
     if (error instanceof TurnRepositoryError && error.code === 'TURN_ALREADY_EXISTS') {
@@ -182,6 +185,8 @@ export default defineEventHandler(async (event) => {
       saveMemoryTool: createSaveMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
       modelConfigurationTools: createModelConfigurationTools({ db }),
       userProfileTools: createUserProfileTools({ db, sessionId: request.sessionId, turnId }),
+      task: taskSnapshot,
+      taskTools: createTaskTools({ db, sessionId: request.sessionId, turnId }),
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),

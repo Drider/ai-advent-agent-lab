@@ -8,6 +8,9 @@ import { assertHistoryAvailable } from './clear-repository'
 import type { MemorySnapshot } from '../../shared/memory'
 import { createUserProfileRepository } from '../persistence/user-profile-repository'
 import type { UserProfileSnapshot } from '../../shared/user-profile'
+import { createTaskRepository } from '../persistence/task-repository'
+import type { TaskSnapshot } from '../../shared/task'
+import { startOnboardingIfNeeded } from '../tasks/onboarding'
 
 function promptOverhead(agentConfig: Record<string, unknown>): number {
   const instructions = agentConfig.instructions
@@ -26,12 +29,16 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
   request: ChatRequestBody
   modelId: string
   agentConfig: Record<string, unknown>
-  createAgentConfig?: (profileSnapshot: UserProfileSnapshot) => Record<string, unknown>
-}): { turnId: string; snapshot: MemorySnapshot; profileSnapshot: UserProfileSnapshot; agentConfig: Record<string, unknown> } {
+  createAgentConfig?: (profileSnapshot: UserProfileSnapshot, taskSnapshot?: TaskSnapshot) => Record<string, unknown>
+}): { turnId: string; snapshot: MemorySnapshot; profileSnapshot: UserProfileSnapshot; taskSnapshot?: TaskSnapshot; agentConfig: Record<string, unknown> } {
   const transaction = db.transaction(() => {
     assertHistoryAvailable(db, input.request.sessionId)
     const profileSnapshot = createUserProfileRepository(db).getForTurn(input.request.sessionId)
-    const agentConfig = input.createAgentConfig?.(profileSnapshot) ?? input.agentConfig
+    if (input.request.kind === 'message') {
+      startOnboardingIfNeeded(db, input.request.sessionId, profileSnapshot.name)
+    }
+    const taskSnapshot = createTaskRepository(db).getSnapshot(input.request.sessionId) ?? undefined
+    const agentConfig = input.createAgentConfig?.(profileSnapshot, taskSnapshot) ?? input.agentConfig
     const snapshot = createMemorySnapshot(db, input.request.sessionId, input.request.message)
     assertMemoryBudgets(snapshot)
     assertImmediateMemoryWindow(snapshot, input.request, agentConfig)
@@ -44,7 +51,7 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
         message: input.request.message as ChatUIMessage,
         agentConfig,
       })
-      return { turnId: started.turnId, snapshot, profileSnapshot, agentConfig }
+      return { turnId: started.turnId, snapshot, profileSnapshot, taskSnapshot, agentConfig }
     }
     const continuation = turns.assessContinuation(input.request.sourceTurnId)
     if (continuation === 'not_available') throw new TurnRepositoryError('CONTINUATION_NOT_AVAILABLE', `turn ${input.request.sourceTurnId} is not available for continuation`)
@@ -57,7 +64,7 @@ export function startMemoryAwareTurn(db: Database.Database, input: {
       message: input.request.message as ChatUIMessage,
       agentConfig,
     })
-    return { turnId: started.turnId, snapshot, profileSnapshot, agentConfig }
+    return { turnId: started.turnId, snapshot, profileSnapshot, taskSnapshot, agentConfig }
   })
   return transaction.immediate()
 }

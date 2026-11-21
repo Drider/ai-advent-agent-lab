@@ -17,6 +17,7 @@ const selectedProfile = shallowRef<UserProfile | null>(null)
 const selectedId = shallowRef<string | null>(null)
 const loading = shallowRef(true)
 const saving = shallowRef(false)
+const deleting = shallowRef(false)
 const settingDefault = shallowRef(false)
 const pageError = shallowRef<string | null>(null)
 const saveError = shallowRef<string | null>(null)
@@ -137,6 +138,36 @@ async function setDefault(id: string): Promise<void> {
   }
 }
 
+async function deleteProfile(id: string): Promise<void> {
+  if (!confirmDiscard()) return
+  const profile = profiles.value.find(item => item.id === id)
+  if (!profile || !window.confirm(`Удалить профиль «${profile.name}»? Это действие нельзя отменить.`)) return
+
+  deleting.value = true
+  saveError.value = null
+  try {
+    await $fetch<{ id: string; deleted: true }>(`/api/user-profiles/${id}`, { method: 'DELETE' })
+    profiles.value = profiles.value.filter(item => item.id !== id)
+    dirty.value = false
+    if (selectedId.value !== id) return
+
+    const replacement = profiles.value.find(item => item.id === defaultProfileId.value) ?? profiles.value[0]
+    if (!replacement) {
+      selectedProfile.value = null
+      selectedId.value = null
+      await navigateTo({ path: '/profiles', query: { ...route.query, profileId: undefined } }, { replace: true })
+      return
+    }
+
+    await loadProfile(replacement.id)
+    await navigateTo({ path: '/profiles', query: { ...route.query, profileId: replacement.id } }, { replace: true })
+  } catch (caughtError) {
+    saveError.value = getRequestMessage(caughtError, 'Не удалось удалить профиль.')
+  } finally {
+    deleting.value = false
+  }
+}
+
 function useLatestVersion(): void {
   const latest = conflictProfile.value
   if (!latest) return
@@ -149,6 +180,9 @@ function useLatestVersion(): void {
 }
 
 function getRequestMessage(error: unknown, fallback: string): string {
+  const code = getErrorCode(error)
+  if (code === 'DEFAULT_PROFILE') return 'Профиль по умолчанию нельзя удалить. Сначала назначьте другой профиль.'
+  if (code === 'PROFILE_IN_USE') return 'Профиль нельзя удалить: он назначен одному или нескольким диалогам.'
   if (typeof error === 'object' && error !== null && 'data' in error && typeof error.data === 'object' && error.data !== null && 'statusMessage' in error.data && typeof error.data.statusMessage === 'string') return error.data.statusMessage
   return error instanceof Error ? error.message : fallback
 }
@@ -190,7 +224,7 @@ onMounted(() => { void loadData() })
         :items="profiles"
         :selected-id="selectedId"
         :default-profile-id="defaultProfileId"
-        :disabled="saving || settingDefault"
+        :disabled="saving || deleting || settingDefault"
         @select="chooseProfile"
         @create="beginCreate"
       />
@@ -198,12 +232,14 @@ onMounted(() => { void loadData() })
         :profile="selectedProfile"
         :default-profile-id="defaultProfileId"
         :saving="saving"
+        :deleting="deleting"
         :setting-default="settingDefault"
         :save-error="saveError"
         :conflict-profile="conflictProfile"
         :reset-key="resetKey"
         @save="updateProfile"
         @create="createProfile"
+        @delete="deleteProfile"
         @set-default="setDefault"
         @reload-latest="useLatestVersion"
         @dirty-change="dirty = $event"

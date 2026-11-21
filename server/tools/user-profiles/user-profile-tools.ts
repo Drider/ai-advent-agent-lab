@@ -32,6 +32,7 @@ export function createUserProfileTools(options: {
   turnId?: string
 } = {}) {
   const unavailable = { code: 'UNAVAILABLE', message: 'User profile storage is unavailable.' }
+  const listedIds = new Set<string>()
   const repository = () => options.db ? createUserProfileRepository(options.db) : undefined
 
   return {
@@ -42,14 +43,36 @@ export function createUserProfileTools(options: {
         const profiles = repository()
         if (!profiles || !options.sessionId) return { ok: false as const, error: unavailable }
         try {
+          const listed = profiles.list()
+          listedIds.clear()
+          for (const profile of listed) listedIds.add(profile.id)
           return {
             ok: true as const,
-            profiles: profiles.list(),
+            profiles: listed,
             currentProfileId: profiles.getForSession(options.sessionId)?.id,
             defaultProfileId: profiles.getDefaultId(),
           }
         } catch (error) {
           return { ok: false as const, error: errorResult(error) }
+        }
+      },
+    }),
+    delete_user_profile: tool({
+      description: 'Delete a user profile only after the user explicitly asks and list_user_profiles has returned the requested profile ID. Never delete the default profile or a profile assigned to a chat.',
+      inputSchema: z.object({ id: idSchema }).strict(),
+      execute: async ({ id }) => {
+        const profiles = repository()
+        if (!profiles) return { deleted: false as const, error: unavailable }
+        if (!listedIds.has(id)) {
+          return { deleted: false as const, error: { code: 'NOT_LISTED', message: 'List user profiles before deleting one.' } }
+        }
+        try {
+          const deleted = profiles.delete(id)
+          if (!deleted) return { deleted: false as const, error: { code: 'NOT_FOUND', message: 'User profile was not found.' } }
+          listedIds.delete(id)
+          return { deleted: true as const, id }
+        } catch (error) {
+          return { deleted: false as const, error: errorResult(error) }
         }
       },
     }),

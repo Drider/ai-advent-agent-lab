@@ -9,6 +9,7 @@ import { createFactsRepository } from '../context-compaction/facts-repository'
 import { MemoryError } from '../memory/errors'
 import { assertHistoryAvailable } from '../memory/clear-repository'
 import { createUserProfileRepository } from './user-profile-repository'
+import { createTaskRepository } from './task-repository'
 import {
   CHAT_MESSAGE_STORAGE_VERSION,
   DEFAULT_CONTEXT_STRATEGY_SETTINGS,
@@ -458,6 +459,7 @@ export function createSessionRepository(db: Database.Database) {
       ...(parent === undefined ? {} : { parent: toBranchLink(parent) }),
       children: children.map(toBranchLink),
       compactionAttempts: getCompactionAttempts(db, id),
+      task: createTaskRepository(db).getSnapshot(id),
     }
   }
 
