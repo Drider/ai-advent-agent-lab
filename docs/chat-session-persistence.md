@@ -2,6 +2,8 @@
 
 Пользовательская история хранится на сервере в `data/chat.sqlite`. Браузер использует `useChat` для показа текущего потока, но после обновления страницы загружает диалог из базы. Диагностические файлы `data/runs/run-*.json` существуют отдельно и не служат источником истории.
 
+Task-состояние хранится в тех же SQLite-транзакциях, но отдельными таблицами: `tasks`, artifacts, approvals, validations, commands, events и tool operations. `SessionDetail` возвращает `taskView` для текущей задачи со статусом `active`/`paused` и `taskHistory` для всех задач диалога. Отсутствие task не восстанавливается из текста, memory или tool parts.
+
 ## Путь сообщения до полного ответа
 
 Схема показывает один новый запрос пользователя. Вызов инструмента происходит только тогда, когда его запросила модель.
@@ -81,3 +83,5 @@ sequenceDiagram
 При запуске сервера ходы, оставшиеся в состоянии `running`, переводятся в `interrupted`; частичные ответы помечаются прерванными. Действие «Продолжить» создаёт **новый** ход и сохраняет в нём отдельную пользовательскую реплику. Ответ получает новый ID, поэтому продолжение не конфликтует с предыдущим сообщением ассистента. Перед этим сервер проверяет неопределённые результаты инструментов и блокирует продолжение, если побочный эффект нельзя подтвердить. Во время продолжения инструменты, меняющие данные, отключены. См. [`chat-recovery.ts`](../server/plugins/chat-recovery.ts), [`turn-repository.ts`](../server/persistence/turn-repository.ts) и [`chat.post.ts`](../server/api/chat.post.ts).
 
 Список сессий и выбранный диалог загружаются через `GET /api/sessions` и `GET /api/sessions/:id`. Для копии работающей базы используйте `npm run backup:chat`: скрипт применяет SQLite Backup API, поскольку при режиме WAL копирования одного файла `chat.sqlite` недостаточно. См. [`session-repository.ts`](../server/persistence/session-repository.ts), [`db.ts`](../server/persistence/db.ts) и [`backup-chat-db.mjs`](../scripts/backup-chat-db.mjs).
+
+Очистка истории сначала проверяет running turn, незавершённые task commands/tool operations, uncertain effect и recovery review. После успешной проверки она атомарно удаляет task-owned rows и tombstone-ит старые operation/resume IDs; project memory и внешние файлы не удаляются. Подробности — в [документации по задачам](task-workflows.md).

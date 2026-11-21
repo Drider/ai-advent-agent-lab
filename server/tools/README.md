@@ -16,6 +16,8 @@
   `save_model_configuration`, `list_model_configurations`, `delete_model_configuration`.
 - [`user-profiles/`](./user-profiles/README.md) — просмотр и явное управление дополнительными инструкциями:
   `list_user_profiles`, `get_user_profile`, `create_user_profile`, `update_user_profile`, `select_user_profile`.
+- [`tasks/`](./tasks/README.md) — чтение и выполнение task-команд, артефактов,
+  переходов и формальных проверок текущего workflow.
 - [`sessions/`](./sessions/README.md) — чтение и агрегирование JSON-логов:
   `get_current_session`, `list_sessions`, `read_session_file`, `analyze_sessions`.
 
