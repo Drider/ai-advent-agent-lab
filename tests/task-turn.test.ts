@@ -6,10 +6,29 @@ import { createTurnRepository } from '../server/persistence/turn-repository'
 import { startMemoryAwareTurn } from '../server/memory/start-turn'
 import { createTaskService } from '../server/tasks/commands'
 import { createTaskRuntime, startTaskAwareTurn } from '../server/tasks/turn-runtime'
+import { fixture } from './task-workflow-fixture'
 
 const message = (sessionId: string, text: string) => ({
   kind: 'message' as const, requestId: randomUUID(), sessionId,
   message: { id: randomUUID(), role: 'user' as const, parts: [{ type: 'text' as const, text }] },
+})
+
+it.each([true, false])('rejects a delayed resume before saving a message (replacement=%s)', async replacement => {
+  const db = openChatDatabase(':memory:')
+  try {
+    const f = fixture(db, true)
+    await f.ok({ type: 'pause' }, 'user')
+    const resumed = await f.service.apply(f.id, { expectedRevision: f.view().task!.revision, operationId: randomUUID(),
+      command: { type: 'resume' } }, { role: 'user', sessionId: f.sessionId })
+    if (!resumed.ok || !resumed.resumeRequestId) throw new Error('Expected a saved resume receipt')
+    await f.ok({ type: 'complete_basic' }, 'user')
+    if (replacement) f.service.create({ task: 'Next', sessionId: f.sessionId, operationId: randomUUID() }, { role: 'user', sessionId: f.sessionId })
+    const request = { ...message(f.sessionId, 'Продолжи текущую задачу с сохранённого шага'), requestId: resumed.resumeRequestId }
+    // The receipt also protects older clients that only send the request UUID.
+    expect(() => startTaskAwareTurn(db, { request, modelId: 'mock', agentConfig: {} })).toThrow(/resume/i)
+    expect(db.prepare('SELECT count(*) n FROM messages').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT count(*) n FROM tasks').get()).toEqual({ n: replacement ? 2 : 1 })
+  } finally { db.close() }
 })
 
 it('binds a basic task and the new turn atomically, including budget rollback', () => {

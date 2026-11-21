@@ -26,7 +26,7 @@ const emit = defineEmits<{
 const name = shallowRef('')
 const instructions = shallowRef('')
 const selectedWorkflow = shallowRef('')
-watch(() => [props.profile?.id, props.profile?.defaultWorkflowId, props.resetKey], () => {
+watch([() => props.profile?.id, () => props.profile?.defaultWorkflowId, () => props.resetKey], () => {
   selectedWorkflow.value = props.profile?.defaultWorkflowId ?? ''
 }, { immediate: true })
 const nameError = computed(() => name.value.trim().length === 0
@@ -43,7 +43,7 @@ function resetFields(): void {
   instructions.value = props.profile?.instructions ?? ''
 }
 
-watch(() => [props.profile?.id, props.resetKey] as const, resetFields, { immediate: true })
+watch([() => props.profile?.id, () => props.resetKey], resetFields, { immediate: true })
 watch(dirty, value => emit('dirtyChange', value), { immediate: true })
 
 function save(): void {

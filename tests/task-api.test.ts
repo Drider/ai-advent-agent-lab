@@ -3,9 +3,40 @@ import { createSessionRepository } from '../server/persistence/session-repositor
 import { startTaskAwareTurn } from '../server/tasks/turn-runtime'
 import { fixture } from './task-workflow-fixture'
 import { taskHttp } from './helpers/task-http'
+import { deliverResume } from '../shared/resume-delivery'
 const api = taskHttp()
 const envelope = (command: object, expectedRevision = 0) => ({ operationId: crypto.randomUUID(), expectedRevision, command })
 const text = (text: string, expectedRevision = 0) => ({ operationId: crypto.randomUUID(), expectedRevision, text })
+
+it('restores a committed resume turn after a lost POST response without sending another turn', async () => {
+  const { id } = createSessionRepository(api.db).createSession()
+  const created = await api.request('/sessions/' + id + '/tasks', { operationId: 'start', task: 'First', selection: 'none' })
+  const url = '/sessions/' + id + '/task-command'
+  await api.request(url, text('/task pause'))
+  const resumed = await api.request(url, text('/task resume', 1))
+  const requestId = resumed.json.resumeRequestId
+  const taskId = created.json.task.id
+  let posts = 0
+  let restored
+  await deliverResume({
+    send: async () => {
+      posts++
+      startTaskAwareTurn(api.db, { request: { kind: 'message', sessionId: id, requestId, resumeTaskId: taskId,
+        message: { id: 'resumed-user-message', role: 'user', parts: [{ type: 'text', text: 'Continue' }] } }, modelId: 'mock', agentConfig: {} })
+      throw new Error('Response lost after commit')
+    },
+    inspect: async () => (await api.request('/sessions/' + id + '?resumeRequestId=' + requestId + '&resumeTaskId=' + taskId)).json,
+    restore: detail => { restored = detail },
+  }, false)
+  expect(posts).toBe(1)
+  expect(restored).toMatchObject({ acceptedResumeTurn: true, lastTurn: { id: requestId }, messages: [{ id: 'resumed-user-message' }] })
+  await deliverResume({
+    send: async () => { throw new Error('Should not POST a second time after an ambiguous response') },
+    inspect: async () => (await api.request('/sessions/' + id + '?resumeRequestId=' + requestId + '&resumeTaskId=' + taskId)).json,
+    restore: detail => { restored = detail },
+  }, true)
+  expect(api.db.prepare('SELECT count(*) n FROM turns').get()).toEqual({ n: 1 })
+})
 
 it('attaches atomically to an empty dialogue and replays decisions after task turnover', async () => {
   const { id } = createSessionRepository(api.db).createSession()

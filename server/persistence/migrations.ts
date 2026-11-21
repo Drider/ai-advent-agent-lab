@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 
-export const CHAT_SCHEMA_VERSION = 14
+export const CHAT_SCHEMA_VERSION = 15
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -642,6 +642,11 @@ export function migrateChatDatabase(db: Database.Database): void {
         `)
       }
     }
+    if (currentVersion < 15) db.exec(`
+      CREATE UNIQUE INDEX task_commands_resume_request_idx
+        ON task_commands (json_extract(receipt_json, '$.resumeRequestId'))
+        WHERE json_extract(receipt_json, '$.resumeRequestId') IS NOT NULL;
+    `)
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
   } catch (error) {

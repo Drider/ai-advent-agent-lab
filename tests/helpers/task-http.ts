@@ -14,6 +14,7 @@ import getWorkflow from '../../server/api/workflows/[id].get'
 import publish from '../../server/api/workflows/[id]/versions.post'
 import validate from '../../server/api/workflows/validate.post'
 import setDefault from '../../server/api/user-profiles/[id]/workflow.patch'
+import getSession from '../../server/api/sessions/[id].get'
 
 const state = vi.hoisted(() => ({} as { db: ReturnType<typeof openChatDatabase> }))
 vi.mock('../../server/persistence/db', async importOriginal => ({
@@ -24,6 +25,7 @@ export function taskHttp() {
   beforeEach(() => { state.db = openChatDatabase(':memory:'); seedBuiltInWorkflows(state.db) })
   afterEach(() => state.db.close())
   const router = createRouter()
+    .get('/sessions/:id', getSession)
     .get('/sessions/:id/tasks', listTasks).post('/sessions/:id/tasks', createTask)
     .post('/sessions/:id/task-command', command).get('/tasks/:id', getTask)
     .post('/tasks/:id/actions', action).get('/tasks/:id/artifacts/:artifactId', artifact)

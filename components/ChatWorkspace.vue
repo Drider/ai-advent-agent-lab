@@ -8,6 +8,7 @@ import type { UserProfileSummary } from '~/shared/user-profile'
 import { useTasks } from '~/composables/useTasks'
 import { completedToolOutputs, currentResumeRequest, requestIdForMessage } from '~/shared/task-ui'
 import { parseTaskCommand } from '~/shared/task-command-parser'
+import { deliverResume, type ResumeSession } from '~/shared/resume-delivery'
 import type { TaskCommand, TaskCommandResult, TaskWorkflowSelection } from '~/shared/task'
 
 const props = defineProps<{
@@ -43,6 +44,8 @@ const tasks = useTasks(() => props.session.id)
 let mountedSession = true
 onScopeDispose(() => { mountedSession = false })
 const resumeRequest = shallowRef<{ id: string; taskId: string } | null>(null)
+const restoredRunning = shallowRef(false)
+const reconciling = shallowRef(false)
 const sentResumeRequests = new Set<string>()
 const activeRequestId = shallowRef<string | null>(null)
 const lastKnownTurnId = shallowRef(props.session.lastTurn?.id ?? null)
@@ -92,6 +95,7 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
         kind: 'message',
         sessionId: props.session.id,
         requestId,
+        ...(typeof body?.resumeTaskId === 'string' ? { resumeTaskId: body.resumeTaskId } : {}),
         message,
         model: props.modelId,
         ...(props.pricing === undefined ? {} : { pricing: props.pricing }),
@@ -138,7 +142,7 @@ const {
 })
 chatMessages = messages
 
-const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
+const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming' || restoredRunning.value || reconciling.value)
 const seenOutput = new Set<string>()
 for (const message of props.session.messages) completedToolOutputs(message.parts, seenOutput)
 watch(() => messages.value.at(-1)?.parts, parts => {
@@ -248,29 +252,66 @@ function handleKeydown(event: KeyboardEvent): void {
 function showTaskError(e: unknown) {
   if (mountedSession) continuationError.value = e instanceof Error ? e.message : 'Не удалось выполнить действие.'
 }
-async function sendResume(request: { id: string; taskId: string }) {
+function restoreSession(detail: SessionDetail) {
+  if (!mountedSession || props.session.id !== detail.id) return
+  messages.value = detail.messages
+  lastKnownTurnId.value = detail.lastTurn?.id ?? null
+  lastTurnStatus.value = detail.lastTurn?.status ?? detail.status
+  restoredRunning.value = detail.lastTurn?.status === 'running'
+  activeRequestId.value = restoredRunning.value ? lastKnownTurnId.value : null
+  clearError()
+  continuationError.value = null
+  emit('updated')
+}
+async function refreshRestoredTurn() {
+  try {
+    restoreSession(await $fetch<SessionDetail>('/api/sessions/' + props.session.id))
+    await tasks.refresh()
+  } catch (e) { showTaskError(e) }
+}
+async function sendResume(request: { id: string; taskId: string }, retry = false) {
   const { id, taskId } = request
   if (!mountedSession || sentResumeRequests.has(id) || isBusy.value) return
-  if (tasks.view.value?.task?.id !== taskId || tasks.view.value.task.status !== 'active') {
+  if (!retry && (tasks.view.value?.task?.id !== taskId || tasks.view.value.task.status !== 'active')) {
     resumeRequest.value = null
     return
   }
   sentResumeRequests.add(id)
   resumeRequest.value = null
+  reconciling.value = true
   clearError()
+  let lookupPending = false
   try {
-    await sendMessage({ text: 'Продолжи текущую задачу с сохранённого шага' }, { body: { kind: 'message', requestId: id } })
-    if (error.value) throw error.value
+    await deliverResume({
+      send: async () => {
+        if (!mountedSession) throw new Error('Диалог изменился.')
+        await sendMessage({ text: 'Продолжи текущую задачу с сохранённого шага' },
+          { body: { kind: 'message', requestId: id, resumeTaskId: taskId } })
+        if (error.value) throw error.value
+      },
+      inspect: async () => {
+        lookupPending = true
+        const detail = await $fetch<ResumeSession>('/api/sessions/' + props.session.id, { query: { resumeRequestId: id, resumeTaskId: taskId } })
+        lookupPending = false
+        return detail
+      },
+      restore: restoreSession,
+    }, retry)
   } catch (e) {
+    if (!mountedSession) return
+    await tasks.refresh()
     sentResumeRequests.delete(id)
-    resumeRequest.value = request
+    if (lookupPending || (tasks.view.value?.task?.id === taskId && tasks.view.value.task.status === 'active')) resumeRequest.value = request
     showTaskError(e)
+  } finally {
+    reconciling.value = false
   }
 }
 async function afterTaskAction(result: TaskCommandResult, command?: TaskCommand) {
   if (!mountedSession || !result.ok || tasks.view.value?.task?.id !== result.task.id) return
   if ((command?.type === 'pause' || command?.type === 'cancel') && isBusy.value) {
     lastTurnStatus.value = 'stopped'
+    restoredRunning.value = false
     await stop()
   }
   const request = currentResumeRequest(result, tasks.view.value)
@@ -332,6 +373,7 @@ async function handleStop(): Promise<void> {
     try {
       await $fetch(`/api/sessions/${props.session.id}/turns/${requestId}/stop`, { method: 'POST' })
       lastTurnStatus.value = 'stopped'
+      restoredRunning.value = false
     } catch (caughtError) {
       continuationError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось остановить ход'
     }
@@ -400,7 +442,8 @@ function dismissError(): void {
     </header>
 
     <ChatTaskPanel :tasks="tasks" :session-id="session.id" :disabled="!!historyClearPending" :streaming="isBusy" @action="applyTaskAction" @retry="retryTask" @create="createTask" />
-    <UButton v-if="resumeRequest" size="sm" :disabled="isBusy" @click="sendResume(resumeRequest)">Продолжить с сохранённого шага</UButton>
+    <UButton v-if="resumeRequest" size="sm" :disabled="isBusy" @click="sendResume(resumeRequest, true)">Продолжить с сохранённого шага</UButton>
+    <UButton v-if="restoredRunning" size="sm" @click="refreshRestoredTurn">Обновить ответ</UButton>
 
     <details v-if="props.contextStrategy.strategy === 'sticky_facts' && Object.keys(props.session.stickyFacts).length > 0" class="sticky-facts-panel">
       <summary>Sticky Facts · {{ Object.keys(props.session.stickyFacts).length }} фактов</summary>

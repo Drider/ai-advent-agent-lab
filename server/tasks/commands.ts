@@ -45,6 +45,7 @@ interface ReserveInput {
   sessionId: string
   kind: 'message' | 'continue'
   requestId: string
+  resumeTaskId?: string
   sourceTurnId?: string
   messageText: string
   workflow?: CreateInput['workflow']
@@ -598,6 +599,16 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
     if (actor.role !== 'system' || actor.sessionId !== sessionId || actor.turnId !== undefined || !requestId.trim()) {
       reject('INVALID_INPUT', 'Turn reservation requires the system context of the session')
     }
+    const task = repository.getUnfinished(sessionId)
+    const resume = db.prepare<[string], { session_id: string; task_id: string }>(`
+      SELECT session_id, task_id FROM task_commands WHERE json_extract(receipt_json, '$.resumeRequestId') = ?
+    `).get(requestId)
+    if (resume || input.resumeTaskId !== undefined) {
+      if (!resume || kind !== 'message' || resume.session_id !== sessionId || task?.id !== resume.task_id
+        || task.status !== 'active' || (input.resumeTaskId !== undefined && input.resumeTaskId !== resume.task_id)) {
+        reject('STALE_TASK_REVISION', 'Resume request no longer belongs to the active task')
+      }
+    }
     const reservation = { type: 'reserve', messageText: input.messageText, workflow: input.workflow ?? null }
     const inputHash = hash(canonicalJson({ ...reservation, kind, sourceTurnId: input.sourceTurnId ?? null }))
     const originalInputHash = kind === 'message' && input.sourceTurnId === undefined
@@ -609,7 +620,6 @@ export function createTaskCommandRuntime(db: Database.Database, options: TaskSer
       return replay.task
     }
 
-    const task = repository.getUnfinished(sessionId)
     checkTurnStart(sessionId, task)
     if (kind === 'continue') {
       const source = input.sourceTurnId === undefined ? undefined : repository.getTurn(input.sourceTurnId, sessionId)

@@ -317,6 +317,7 @@ export type ChatRequestBody =
       kind: 'message'
       sessionId: string
       requestId: string
+      resumeTaskId?: string
       model?: string
       pricing?: ChatPricing
       compaction?: ChatCompactionSettings
@@ -445,6 +446,10 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
   if ('messages' in input || 'runId' in input) {
     throw new Error('client-supplied history is not accepted')
   }
+  const resumeTaskId = input.resumeTaskId
+  if (resumeTaskId !== undefined && (input.kind !== 'message' || typeof resumeTaskId !== 'string' || !UUID_PATTERN.test(resumeTaskId))) {
+    throw new Error('resumeTaskId must identify a task in a normal message request')
+  }
 
   const model = input.model === undefined ? undefined : validateModelId(input.model)
   const pricing = validatePricing(input.pricing)
@@ -487,6 +492,7 @@ export function validateChatRequest(input: unknown): ChatRequestBody {
     kind: 'message',
     sessionId: input.sessionId,
     requestId: input.requestId,
+    ...(resumeTaskId === undefined ? {} : { resumeTaskId }),
     message: input.message,
     ...(model === undefined ? {} : { model }),
     ...(pricing === undefined ? {} : { pricing }),

@@ -25,6 +25,13 @@ function createConfig(overrides: Partial<ChatRuntimeConfig> = {}): ChatRuntimeCo
 }
 
 describe('parseChatPayload', () => {
+  it('passes the resume task through the normal message entry point', async () => {
+    const resumeTaskId = '33333333-3333-4333-8333-333333333333'
+    const input = { kind: 'message', sessionId, requestId, resumeTaskId, message: validMessage }
+    await expect(parseChatPayload(JSON.stringify(input))).resolves.toMatchObject({ kind: 'message', resumeTaskId })
+    await expect(parseChatPayload(JSON.stringify({ ...input, resumeTaskId: 'bad' }))).rejects.toThrow(/resumeTaskId/)
+    await expect(parseChatPayload(JSON.stringify({ ...input, kind: 'continue', sourceTurnId: requestId }))).rejects.toThrow(/resumeTaskId/)
+  })
   it('parses a valid new-message payload', async () => {
     await expect(parseChatPayload(JSON.stringify({
       kind: 'message',
