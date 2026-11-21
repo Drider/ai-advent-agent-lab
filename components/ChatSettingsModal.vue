@@ -2,6 +2,8 @@
 import { ref, watch } from 'vue'
 import { parseContextLimit, type ChatCostSettings, type ChatContextStrategySettings } from '~/shared/chat'
 import { modelConfigurationNameKey, type ModelConfiguration, type ModelConfigurationSaveRequest } from '~/shared/model-config'
+import InvariantPanel from '~/components/InvariantPanel.vue'
+import type { Invariant, InvariantChange } from '~/shared/invariant'
 
 const props = defineProps<{
   open: boolean
@@ -19,6 +21,10 @@ const props = defineProps<{
   configurationError?: string | null
   configurationSaveError?: string | null
   configurationDeleteError?: string | null
+  invariants: Invariant[]
+  invariantChanges: InvariantChange[]
+  invariantsLoading?: boolean
+  invariantError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -199,6 +205,13 @@ function save(): void {
           <p v-if="props.configurationError" class="settings-modal__error" role="alert">{{ props.configurationError }}</p>
           <p v-if="props.configurationSaveError" class="settings-modal__error" role="alert">{{ props.configurationSaveError }}</p>
         </section>
+
+        <InvariantPanel
+          :invariants="props.invariants"
+          :changes="props.invariantChanges"
+          :loading="props.invariantsLoading"
+          :error="props.invariantError"
+        />
 
         <section class="settings-modal__save-configuration" aria-labelledby="save-configuration-title">
           <h3 id="save-configuration-title">Сохранить текущие значения</h3>

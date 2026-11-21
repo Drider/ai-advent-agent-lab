@@ -11,6 +11,7 @@ export interface ChatMessageMetadata {
   steps?: Array<{ usage: ChatTokenUsage }>
   stopReason?: 'step_limit'
   costRub?: ChatCostRub
+  invariantViolations?: string[]
 }
 
 export interface ChatPricing {

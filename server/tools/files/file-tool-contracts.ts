@@ -18,6 +18,7 @@ export type ToolErrorCode =
   | 'INVALID_PDF'
   | 'SCAN_LIMIT'
   | 'IO_ERROR'
+  | 'INVARIANT_VIOLATION'
 
 export type ToolResult<T> =
   | { ok: true; data: T }

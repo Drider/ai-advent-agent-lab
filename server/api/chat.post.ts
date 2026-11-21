@@ -22,6 +22,7 @@ import type { MemorySnapshot } from '../../shared/memory'
 import { estimateInputTokens } from '../context-compaction/estimate'
 import { createMemoryUsageRepository } from '../memory/usage-repository'
 import { ContextLimitError } from '../context-compaction/step-guard'
+import { createInvariantRepository } from '../persistence/invariant-repository'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -54,6 +55,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const db = getChatDatabase()
+  const invariants = createInvariantRepository(db).list()
   const provider = createOpenAI({
     baseURL: chatConfig.baseURL,
     apiKey: chatConfig.apiKey,
@@ -81,8 +83,8 @@ export default defineEventHandler(async (event) => {
     const started = startMemoryAwareTurn(db, {
       request,
       modelId: chatConfig.modelId,
-      agentConfig: getAgentConfig(compactionSettings, contextStrategy),
-      createAgentConfig: (profile, task) => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue', task),
+      agentConfig: getAgentConfig(compactionSettings, contextStrategy, undefined, request.kind === 'continue', undefined, invariants),
+      createAgentConfig: (profile, task) => getAgentConfig(compactionSettings, contextStrategy, profile, request.kind === 'continue', task, invariants),
     })
     turnId = started.turnId
     memorySnapshot = started.snapshot
@@ -187,6 +189,7 @@ export default defineEventHandler(async (event) => {
       userProfileTools: createUserProfileTools({ db, sessionId: request.sessionId, turnId }),
       task: taskSnapshot,
       taskTools: createTaskTools({ db, sessionId: request.sessionId, turnId }),
+      invariants,
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),

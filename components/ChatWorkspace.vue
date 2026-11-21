@@ -6,6 +6,7 @@ import { useChat } from '@ai-sdk/vue'
 import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 import type { UserProfileSummary } from '~/shared/user-profile'
 import { parseTaskCommand } from '~/shared/task'
+import { parseInvariantCommand, type InvariantCommand } from '~/shared/invariant'
 
 const props = defineProps<{
   session: SessionDetail
@@ -42,6 +43,7 @@ const emit = defineEmits<{
     expectedProfileName?: string
   }]
   taskAnswers: [payload: { answers: Record<string, string>; expectedRevision: number }]
+  invariantCommand: [command: InvariantCommand]
 }>()
 
 const draft = shallowRef('')
@@ -61,6 +63,37 @@ function getMessageText(message: ChatUIMessage): string {
     .filter((part): part is Extract<ChatUIMessage['parts'][number], { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+interface InvariantCheckSections {
+  summary: string
+  body: string
+}
+
+function splitInvariantCheck(text: string): InvariantCheckSections | null {
+  const match = text.match(/^\s*(Проверка инвариантов:[^\r\n]*)(?:\r?\n){1,2}([\s\S]*)$/u)
+  if (!match) return null
+  return {
+    summary: match[1]!.trim(),
+    body: match[2]!.trimStart(),
+  }
+}
+
+function hasInvariantCheck(text: string): boolean {
+  return splitInvariantCheck(text) !== null
+}
+
+function invariantCheckSummary(text: string): string {
+  return splitInvariantCheck(text)?.summary ?? ''
+}
+
+function invariantCheckBody(text: string): string {
+  return splitInvariantCheck(text)?.body ?? ''
+}
+
+function invariantCheckFailed(text: string): boolean {
+  const summary = splitInvariantCheck(text)?.summary ?? ''
+  return /✗|✕|❌|не\s+(?:прошла|пройдена|пройден|прошел|прошёл)/iu.test(summary)
 }
 
 function getCompactionSettings(): ChatCompactionSettings {
@@ -235,6 +268,16 @@ async function handleSubmit(event?: Event): Promise<void> {
         }),
       })
     }
+    return
+  }
+  if (/^\/invariant(\s|$)/u.test(text)) {
+    const command = parseInvariantCommand(text)
+    draft.value = ''
+    if (!command.ok) {
+      taskCommandError.value = command.error
+      return
+    }
+    emit('invariantCommand', command)
     return
   }
   pendingSend = { text, baselineIds: new Set(messages.value.map(message => message.id)) }
@@ -425,7 +468,28 @@ function dismissError(): void {
       <template #content="{ message }">
         <div class="message-content">
           <template v-for="(part, index) in message.parts" :key="message.id + '-' + index">
-            <Markdown v-if="isTextUIPart(part) && message.role === 'assistant'" :value="part.text" :components="markdownComponents" :plugins="markdownPlugins" />
+            <template v-if="isTextUIPart(part) && message.role === 'assistant'">
+              <details
+                v-if="hasInvariantCheck(part.text)"
+                class="invariant-check"
+                :class="{ 'invariant-check--failed': invariantCheckFailed(part.text) || Boolean(message.metadata?.invariantViolations?.length) }"
+              >
+                <summary>Проверка инвариантов</summary>
+                <p class="invariant-check__details">{{ invariantCheckSummary(part.text) }}</p>
+              </details>
+              <Markdown
+                v-if="hasInvariantCheck(part.text)"
+                :value="invariantCheckBody(part.text)"
+                :components="markdownComponents"
+                :plugins="markdownPlugins"
+              />
+              <Markdown
+                v-else
+                :value="part.text"
+                :components="markdownComponents"
+                :plugins="markdownPlugins"
+              />
+            </template>
             <p v-else-if="isTextUIPart(part)" class="user-message-text">{{ part.text }}</p>
             <ChatToolCall v-else-if="message.role === 'assistant' && isToolUIPart(part)" :part="part" :is-active="isBusy && message.id === messages.at(-1)?.id" />
           </template>
@@ -436,6 +500,9 @@ function dismissError(): void {
             :show-detailed="props.showDetailedStatistics"
             :dialogue-cost-rub="dialogueTotals.get(message.id)"
           />
+          <UBadge v-if="message.role === 'assistant' && message.metadata?.invariantViolations?.length" color="error" variant="subtle">
+            Заблокировано инвариантом: {{ message.metadata.invariantViolations.join(', ') }}
+          </UBadge>
           <div v-if="!isBusy && (getMessageText(message) || message.role === 'assistant')" class="message-actions">
             <button
               v-if="getMessageText(message)"
@@ -573,6 +640,33 @@ function dismissError(): void {
 }
 
 .message-memory-button:hover { color: #1d4ed8; background: #eff6ff; }
+
+.invariant-check {
+  margin: .35rem 0 .5rem;
+  border-left: 2px solid #cbd5e1;
+  padding-left: .65rem;
+  color: #64748b;
+  font-size: .72rem;
+}
+
+.invariant-check summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.invariant-check summary:hover { color: #1d4ed8; }
+
+.invariant-check--failed {
+  border-left-color: #ef4444;
+  color: #b91c1c;
+}
+
+.invariant-check--failed summary:hover { color: #991b1b; }
+
+.invariant-check__details {
+  margin: .35rem 0 0;
+  line-height: 1.45;
+}
 
 .compaction-attempt {
   margin-top: 0.5rem;

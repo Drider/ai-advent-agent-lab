@@ -10,6 +10,7 @@ import type { Project, MemorySource } from '~/shared/memory'
 import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
 import type { UserProfileSummary } from '~/shared/user-profile'
 import type { TaskSnapshot } from '~/shared/task'
+import type { Invariant, InvariantChange, InvariantCommand } from '~/shared/invariant'
 
 interface SessionListResponse {
   items: SessionSummary[]
@@ -39,6 +40,10 @@ const session = shallowRef<SessionDetail | null>(null)
 const userProfiles = shallowRef<UserProfileSummary[]>([])
 const userProfilesLoading = shallowRef(false)
 const profileSelectionError = shallowRef<string | null>(null)
+const invariants = shallowRef<Invariant[]>([])
+const invariantChanges = shallowRef<InvariantChange[]>([])
+const invariantsLoading = shallowRef(false)
+const invariantError = shallowRef<string | null>(null)
 const taskError = shallowRef<string | null>(null)
 const loading = shallowRef(true)
 const groupRefreshKey = shallowRef(0)
@@ -104,6 +109,51 @@ async function loadUserProfiles(): Promise<void> {
     profileSelectionError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось загрузить профили.'
   } finally {
     userProfilesLoading.value = false
+  }
+}
+
+async function loadInvariants(): Promise<void> {
+  invariantsLoading.value = true
+  try {
+    const result = await $fetch<{ invariants: Invariant[]; changes: InvariantChange[] }>('/api/invariants')
+    invariants.value = result.invariants
+    invariantChanges.value = result.changes
+    invariantError.value = null
+  } catch (caughtError) {
+    invariantError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось загрузить инварианты.'
+  } finally {
+    invariantsLoading.value = false
+  }
+}
+
+function invariantChangeNotice(command: InvariantCommand, before: Invariant | undefined, after: Invariant | undefined): string {
+  if (command.action === 'remove') return `${command.id}: правило удалено.`
+  if (command.action === 'forbid') return `${command.id}: шаблоны запрета обновлены.`
+  return `${command.id}: «${before?.rule ?? 'нет правила'}» → «${after?.rule ?? command.rule}»`
+}
+
+async function handleInvariantCommand(command: InvariantCommand): Promise<void> {
+  const before = invariants.value.find(invariant => invariant.id === command.id)
+  invariantError.value = null
+  try {
+    if (command.action === 'remove') {
+      await $fetch(`/api/invariants/${command.id}`, { method: 'DELETE' })
+    } else if (command.action === 'forbid') {
+      await $fetch(`/api/invariants/${command.id}`, { method: 'PUT', body: { forbidden: command.forbidden } })
+    } else {
+      await $fetch(`/api/invariants/${command.id}`, {
+        method: 'PUT',
+        body: {
+          rule: command.rule,
+          ...(command.category === undefined ? {} : { category: command.category }),
+        },
+      })
+    }
+    await loadInvariants()
+    const after = invariants.value.find(invariant => invariant.id === command.id)
+    operationError.value = invariantChangeNotice(command, before, after)
+  } catch (caughtError) {
+    invariantError.value = caughtError instanceof Error ? caughtError.message : 'Не удалось изменить инвариант.'
   }
 }
 
@@ -517,7 +567,7 @@ onMounted(async () => {
   } catch {
     operationError.value ??= 'Не удалось прочитать локальные настройки. Проверьте настройки браузера.'
   }
-  await Promise.all([loadSession(), loadUserProfiles(), loadProjects()])
+  await Promise.all([loadSession(), loadUserProfiles(), loadProjects(), loadInvariants()])
   await importLegacyCompactionSettings()
 })
 
@@ -599,6 +649,10 @@ watch(sessionId, () => {
       :projects="projects"
       :created-project-id="createdProjectId"
       :project-error="projectError"
+      :invariants="invariants"
+      :invariant-changes="invariantChanges"
+      :invariants-loading="invariantsLoading"
+      :invariant-error="invariantError"
       @select="handleSelect"
       @refresh-configurations="loadModelConfigurations"
       @update:model-value="handleModelChange"
@@ -639,6 +693,7 @@ watch(sessionId, () => {
       @task-start="handleTaskStart"
       @task-action="handleTaskAction"
       @task-answers="handleTaskAnswers"
+      @invariant-command="handleInvariantCommand"
     />
     <MemoryEntryForm
       :open="memoryFormOpen"

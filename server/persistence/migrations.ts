@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
+import { INITIAL_INVARIANTS } from '../../shared/invariant'
 
-export const CHAT_SCHEMA_VERSION = 17
+export const CHAT_SCHEMA_VERSION = 18
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -501,6 +502,48 @@ export function migrateChatDatabase(db: Database.Database): void {
         END
         WHERE requested_revision = 0;
       `)
+    }
+    if (currentVersion < 18) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS invariants (
+          id TEXT PRIMARY KEY,
+          category TEXT NOT NULL CHECK (category IN ('architecture', 'decision', 'stack', 'business')),
+          title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
+          rule TEXT NOT NULL CHECK (length(rule) BETWEEN 1 AND 2000),
+          forbidden_json TEXT NOT NULL CHECK (json_valid(forbidden_json)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invariant_changes (
+          id TEXT PRIMARY KEY,
+          invariant_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('create', 'update', 'remove')),
+          before_json TEXT CHECK (before_json IS NULL OR json_valid(before_json)),
+          after_json TEXT CHECK (after_json IS NULL OR json_valid(after_json)),
+          changed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS invariants_category_id_idx
+          ON invariants (category, id);
+        CREATE INDEX IF NOT EXISTS invariant_changes_changed_at_idx
+          ON invariant_changes (changed_at DESC, id DESC);
+      `)
+      const timestamp = new Date().toISOString()
+      const insert = db.prepare(`
+        INSERT OR IGNORE INTO invariants
+          (id, category, title, rule, forbidden_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const invariant of INITIAL_INVARIANTS) {
+        insert.run(
+          invariant.id,
+          invariant.category,
+          invariant.title,
+          invariant.rule,
+          JSON.stringify(invariant.forbidden),
+          timestamp,
+          timestamp,
+        )
+      }
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')

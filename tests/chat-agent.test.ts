@@ -22,6 +22,7 @@ import { createSessionRepository } from '../server/persistence/session-repositor
 import { createTurnRepository } from '../server/persistence/turn-repository'
 import { createUserProfileRepository } from '../server/persistence/user-profile-repository'
 import type { ChatUIMessage } from '../shared/chat'
+import type { Invariant } from '../shared/invariant'
 import { createDiceTool, createListSavedRollsTool } from '../server/tools/dice'
 import { createFileTools, type FileTools } from '../server/tools/files'
 import { createSaveMemoryTool } from '../server/tools/memory'
@@ -202,6 +203,15 @@ function createTestFileTools() {
   return createFileTools({ rootDir: fileDirectory })
 }
 
+const frontendInvariant: Invariant = {
+  id: 'stack-frontend',
+  category: 'stack',
+  title: 'Фронтенд',
+  rule: 'Фронтенд только Vue 3 / Nuxt.',
+  forbidden: [String.raw`from\s+['"]react['"]`, String.raw`\bimport\s+React\b`],
+  updatedAt: '2026-11-22T00:00:00.000Z',
+}
+
 describe('chat agent', () => {
   it('includes onboarding questions and saved answers in task instructions', () => {
     const instructions = buildAgentInstructions(undefined, false, {
@@ -225,6 +235,13 @@ describe('chat agent', () => {
     expect(instructions).toContain('get_task_state')
     expect(instructions).toContain('confirmationHint')
     expect(instructions).toContain('Do not invent or construct a confirmation command')
+  })
+
+  it('includes the invariant snapshot and command-only change rule in instructions', () => {
+    const instructions = buildAgentInstructions(undefined, false, undefined, [frontendInvariant])
+    expect(instructions).toContain('<invariants>')
+    expect(instructions).toContain('stack-frontend [stack] Фронтенд только Vue 3 / Nuxt.')
+    expect(instructions).toContain('Only the explicit /invariant set command can change an invariant.')
   })
 
   it('includes the full user profile in every model step without adding it to chat history', async () => {
@@ -557,6 +574,53 @@ describe('chat agent', () => {
     expect(response.status).toBe(200)
     expect(body).toContain('Выпало 17.')
     expect(model.doStreamCalls).toHaveLength(2)
+  })
+
+  it('replaces a violating streamed answer before it reaches the client', async () => {
+    const model = new MockLanguageModelV3({
+      doStream: streamTextResult("import React from 'react'"),
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [userMessage('Сделай компонент')],
+      runId: '2026-11-22T12:00:00.000Z',
+      logLevel: 'off',
+      invariants: [frontendInvariant],
+    })
+    const body = await response.text()
+
+    expect(body).toContain('Ответ заменён кодовым отказом')
+    expect(body).toContain('stack-frontend')
+    expect(body).not.toContain("import React from 'react'")
+    expect(body).toContain('invariantViolations')
+  })
+
+  it('blocks write_file content that violates an invariant', async () => {
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamFileToolCallResult('blocked-write', 'write_file', {
+          path: 'blocked.md',
+          content: "import React from 'react'",
+        }),
+        streamTextResult('Файл не записан.'),
+      ],
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [userMessage('Запиши React-версию в файл')],
+      runId: '2026-11-22T12:01:00.000Z',
+      logLevel: 'off',
+      invariants: [frontendInvariant],
+    }, createTestDiceTool(fixedDraw(1)), createTestSavedRollsTool(), createTestFileTools())
+    const body = await response.text()
+
+    await expect(readFile(join(fileDirectory, 'blocked.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(body).toContain('INVARIANT_VIOLATION')
+    expect(body).toContain('Файл не записан.')
   })
 
   it('binds get_current_session to the current streaming request', async () => {

@@ -5,6 +5,7 @@ import ProjectSessionGroups from '~/components/ProjectSessionGroups.vue'
 import type { ChatCostSettings, ChatContextStrategySettings, SessionSummary } from '~/shared/chat'
 import type { ModelConfiguration, ModelConfigurationSaveRequest } from '~/shared/model-config'
 import type { Project } from '~/shared/memory'
+import type { Invariant, InvariantChange } from '~/shared/invariant'
 
 const costSettings = defineModel<ChatCostSettings>('costSettings', { required: true })
 const detailedStatistics = defineModel<boolean>('detailedStatistics', { default: false })
@@ -33,6 +34,10 @@ const props = defineProps<{
   projects?: Project[]
   createdProjectId?: string | null
   projectError?: string | null
+  invariants: Invariant[]
+  invariantChanges: InvariantChange[]
+  invariantsLoading?: boolean
+  invariantError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -97,6 +102,10 @@ function openSettings(): void {
       :configuration-error="props.configurationError"
       :configuration-save-error="props.configurationSaveError"
       :configuration-delete-error="props.configurationDeleteError"
+      :invariants="props.invariants"
+      :invariant-changes="props.invariantChanges"
+      :invariants-loading="props.invariantsLoading"
+      :invariant-error="props.invariantError"
       @cancel="settingsOpen = false"
       @save="handleSettingsSave"
       @save-configuration="emit('saveConfiguration', $event)"
