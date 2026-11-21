@@ -9,7 +9,7 @@
 - [`dice/`](./dice/README.md) — броски кубика и история бросков:
   `rollDie`, `listSavedRolls`.
 - [`files/`](./files/README.md) — поиск, чтение, анализ и создание файлов:
-  `find_files`, `read_file`, `search_text`, `text_stats`, `write_file`.
+  `find_files`, `read_file`, `read_pdf`, `search_text`, `text_stats`, `write_file`.
 - [`memory/`](./memory/README.md) — явное сохранение записи в рабочую или долговременную память:
   `save_memory`.
 - [`model-configurations/`](./model-configurations/README.md) — сохранение, просмотр и удаление именованных конфигураций моделей:
@@ -18,9 +18,10 @@
   `list_user_profiles`, `get_user_profile`, `create_user_profile`, `update_user_profile`, `delete_user_profile`, `select_user_profile`.
 - [`sessions/`](./sessions/README.md) — чтение и агрегирование JSON-логов:
   `get_current_session`, `list_sessions`, `read_session_file`, `analyze_sessions`.
-- [`tasks/`](./tasks/README.md) — ответы анкеты, шаг задачи и предложения переходов:
-  `record_task_answer`, `update_task_step`, `request_task_transition`.
+- [`tasks/`](./tasks/README.md) — состояние задачи, ответы анкеты, шаг и предложения переходов:
+  `get_task_state`, `record_task_answer`, `amend_task_answer`, `update_task_step`,
+  `request_task_transition`, `cancel_task_transition`.
 
-`server/agent/chat-agent.ts` подключает группы инструментов и правила из их
-`SKILL.md` к `ToolLoopAgent`,
-а внутренние реализации групп не используются напрямую за их пределами.
+`server/agent/chat-agent.ts` подключает группы инструментов к `ToolLoopAgent`.
+Описание поведения для модели находится в определениях инструментов; файлы
+`SKILL.md` в отдельных группах служат документацией для разработчиков.
