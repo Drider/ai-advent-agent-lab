@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import type { UserProfile } from '~/shared/user-profile'
+import type { WorkflowSummary } from '~/shared/workflow'
 
 const props = defineProps<{
   profile: UserProfile | null
@@ -10,6 +11,7 @@ const props = defineProps<{
   saveError?: string | null
   conflictProfile?: UserProfile | null
   resetKey: number
+  workflows?: WorkflowSummary[]
 }>()
 
 const emit = defineEmits<{
@@ -18,10 +20,15 @@ const emit = defineEmits<{
   setDefault: [profileId: string]
   reloadLatest: []
   dirtyChange: [dirty: boolean]
+  saveWorkflow: [profileId: string, revision: number, workflowId: string | null]
 }>()
 
 const name = shallowRef('')
 const instructions = shallowRef('')
+const selectedWorkflow = shallowRef('')
+watch(() => [props.profile?.id, props.profile?.defaultWorkflowId, props.resetKey], () => {
+  selectedWorkflow.value = props.profile?.defaultWorkflowId ?? ''
+}, { immediate: true })
 const nameError = computed(() => name.value.trim().length === 0
   ? 'Укажите название профиля.'
   : name.value.trim().length > 80 ? 'Название должно быть не длиннее 80 символов.' : null)
@@ -89,6 +96,15 @@ function save(): void {
     </div>
 
     <p v-if="props.saveError" class="profile-editor__error" role="alert">{{ props.saveError }}</p>
+    <div v-if="profile && workflows" class="profile-editor__field">
+      <label>Workflow для новых задач
+        <select v-model="selectedWorkflow" :disabled="saving">
+          <option value="">Без workflow</option>
+          <option v-for="workflow in workflows" :key="workflow.id" :value="workflow.id">{{ workflow.name }}</option>
+        </select>
+      </label>
+      <UButton size="sm" color="neutral" variant="soft" :disabled="saving || selectedWorkflow === (profile.defaultWorkflowId ?? '')" @click="emit('saveWorkflow', profile.id, profile.revision, selectedWorkflow || null)">Сохранить выбор workflow</UButton>
+    </div>
     <div v-if="props.conflictProfile" class="profile-editor__conflict" role="alert">
       <p>На сервере уже есть более новая версия, ревизия {{ props.conflictProfile.revision }}. Черновик сохранён в этой форме.</p>
       <UButton size="sm" color="neutral" variant="soft" @click="emit('reloadLatest')">Загрузить актуальную версию</UButton>

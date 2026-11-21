@@ -4,6 +4,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import UserProfileEditor from '~/components/UserProfileEditor.vue'
 import UserProfileList from '~/components/UserProfileList.vue'
 import type { UserProfile, UserProfileSummary } from '~/shared/user-profile'
+import { useWorkflows } from '~/composables/useWorkflows'
 
 interface ProfileListResponse {
   items: UserProfileSummary[]
@@ -11,6 +12,7 @@ interface ProfileListResponse {
 }
 
 const route = useRoute()
+const workflows = useWorkflows()
 const profiles = shallowRef<UserProfileSummary[]>([])
 const defaultProfileId = shallowRef('')
 const selectedProfile = shallowRef<UserProfile | null>(null)
@@ -148,6 +150,21 @@ function useLatestVersion(): void {
   resetKey.value += 1
 }
 
+async function saveWorkflow(id: string, expectedRevision: number, workflowId: string | null) {
+  saving.value = true
+  saveError.value = null
+  try {
+    const profile = await $fetch<UserProfile>('/api/user-profiles/' + id + '/workflow', { method: 'PATCH', body: { expectedRevision, workflowId } })
+    if (selectedId.value === id) selectedProfile.value = profile
+    profiles.value = profiles.value.map(item => item.id === id ? toSummary(profile) : item)
+  } catch (e) {
+    saveError.value = getRequestMessage(e, 'Не удалось сохранить выбор workflow.')
+    if (getErrorCode(e) === 'REVISION_CONFLICT') {
+      try { conflictProfile.value = await $fetch<UserProfile>('/api/user-profiles/' + id) } catch { /* Keep the draft. */ }
+    }
+  } finally { saving.value = false }
+}
+
 function getRequestMessage(error: unknown, fallback: string): string {
   if (typeof error === 'object' && error !== null && 'data' in error && typeof error.data === 'object' && error.data !== null && 'statusMessage' in error.data && typeof error.data.statusMessage === 'string') return error.data.statusMessage
   return error instanceof Error ? error.message : fallback
@@ -169,7 +186,7 @@ function toSummary(profile: UserProfile): UserProfileSummary {
 }
 
 onBeforeRouteLeave(() => confirmDiscard())
-onMounted(() => { void loadData() })
+onMounted(() => { void loadData(); void workflows.load() })
 </script>
 
 <template>
@@ -184,6 +201,7 @@ onMounted(() => { void loadData() })
     </header>
 
     <p v-if="pageError" class="profiles-page__error" role="alert">{{ pageError }}</p>
+    <p v-if="workflows.error.value" role="alert">{{ workflows.error.value }}</p>
     <div v-if="loading" class="profiles-page__loading" role="status"><UIcon name="i-lucide-loader-circle" /> Загружаем профили…</div>
     <div v-else class="profiles-page__layout">
       <UserProfileList
@@ -195,6 +213,8 @@ onMounted(() => { void loadData() })
         @create="beginCreate"
       />
       <UserProfileEditor
+        :workflows="workflows.items.value"
+        @save-workflow="saveWorkflow"
         :profile="selectedProfile"
         :default-profile-id="defaultProfileId"
         :saving="saving"

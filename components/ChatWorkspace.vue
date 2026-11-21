@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
-import { computed, onMounted, shallowRef, watch } from 'vue'
+import { computed, onMounted, onScopeDispose, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
 import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 import type { UserProfileSummary } from '~/shared/user-profile'
+import { useTasks } from '~/composables/useTasks'
+import { completedToolOutputs, currentResumeRequest, requestIdForMessage } from '~/shared/task-ui'
+import { parseTaskCommand } from '~/shared/task-command-parser'
+import type { TaskCommand, TaskCommandResult, TaskWorkflowSelection } from '~/shared/task'
 
 const props = defineProps<{
   session: SessionDetail
@@ -35,6 +39,11 @@ const emit = defineEmits<{
 }>()
 
 const draft = shallowRef('')
+const tasks = useTasks(() => props.session.id)
+let mountedSession = true
+onScopeDispose(() => { mountedSession = false })
+const resumeRequest = shallowRef<{ id: string; taskId: string } | null>(null)
+const sentResumeRequests = new Set<string>()
 const activeRequestId = shallowRef<string | null>(null)
 const lastKnownTurnId = shallowRef(props.session.lastTurn?.id ?? null)
 const lastTurnStatus = shallowRef<ChatSessionStatus>(props.session.lastTurn?.status ?? props.session.status)
@@ -75,7 +84,7 @@ const transport = new DefaultChatTransport<ChatUIMessage>({
     if (!message) {
       throw new Error('Cannot send an empty chat')
     }
-    const requestId = crypto.randomUUID()
+    const requestId = requestIdForMessage(body)
     activeRequestId.value = requestId
     lastKnownTurnId.value = requestId
     return {
@@ -116,18 +125,28 @@ const {
     draft.value = failed.text
   },
   onFinish: ({ isAbort, isError }) => {
+    if (!mountedSession) return
     const reachedStepLimit = messages.value.at(-1)?.metadata?.stopReason === 'step_limit'
     lastTurnStatus.value = isAbort
       ? lastTurnStatus.value === 'stopped' ? 'stopped' : 'interrupted'
       : isError ? 'failed' : reachedStepLimit ? 'interrupted' : 'completed'
     activeRequestId.value = null
     pendingSend = null
+    void tasks.refresh()
     emit('updated')
   },
 })
 chatMessages = messages
 
 const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
+const seenOutput = new Set<string>()
+for (const message of props.session.messages) completedToolOutputs(message.parts, seenOutput)
+watch(() => messages.value.at(-1)?.parts, parts => {
+  if (parts && completedToolOutputs(parts, seenOutput)) void tasks.refresh()
+}, { deep: true })
+watch(status, state => {
+  if (state === 'streaming') void tasks.refresh()
+})
 const dialogueTotals = computed(() => dialogueCostTotals(messages.value, props.session.compactionAttempts))
 const stickyFactsMaintenanceTokens = computed(() => props.session.factsUpdates.reduce((total, update) => total + (update.usage?.totalTokens ?? 0), 0))
 const compactionAttemptsByUserMessage = computed(() => {
@@ -192,7 +211,19 @@ watch(() => props.session.lastTurn, turn => {
 async function handleSubmit(event?: Event): Promise<void> {
   event?.preventDefault()
   const text = draft.value.trim()
-  if (!text || isBusy.value || props.historyClearPending) return
+  if (!text || props.historyClearPending) return
+  const command = parseTaskCommand(text)
+  if (command) {
+    try {
+      const { result } = await tasks.submitCommand(text)
+      if (result?.ok && mountedSession) {
+        if (draft.value.trim() === text) draft.value = ''
+        await afterTaskAction(result, command)
+      }
+    } catch (e) { showTaskError(e) }
+    return
+  }
+  if (isBusy.value) return
   clearError()
   continuationError.value = null
   pendingSend = { text, baselineIds: new Set(messages.value.map(message => message.id)) }
@@ -212,6 +243,52 @@ function handleKeydown(event: KeyboardEvent): void {
     event.preventDefault()
     void handleSubmit()
   }
+}
+
+function showTaskError(e: unknown) {
+  if (mountedSession) continuationError.value = e instanceof Error ? e.message : 'Не удалось выполнить действие.'
+}
+async function sendResume(request: { id: string; taskId: string }) {
+  const { id, taskId } = request
+  if (!mountedSession || sentResumeRequests.has(id) || isBusy.value) return
+  if (tasks.view.value?.task?.id !== taskId || tasks.view.value.task.status !== 'active') {
+    resumeRequest.value = null
+    return
+  }
+  sentResumeRequests.add(id)
+  resumeRequest.value = null
+  clearError()
+  try {
+    await sendMessage({ text: 'Продолжи текущую задачу с сохранённого шага' }, { body: { kind: 'message', requestId: id } })
+    if (error.value) throw error.value
+  } catch (e) {
+    sentResumeRequests.delete(id)
+    resumeRequest.value = request
+    showTaskError(e)
+  }
+}
+async function afterTaskAction(result: TaskCommandResult, command?: TaskCommand) {
+  if (!mountedSession || !result.ok || tasks.view.value?.task?.id !== result.task.id) return
+  if ((command?.type === 'pause' || command?.type === 'cancel') && isBusy.value) {
+    lastTurnStatus.value = 'stopped'
+    await stop()
+  }
+  const request = currentResumeRequest(result, tasks.view.value)
+  if (request) {
+    resumeRequest.value = request
+    await sendResume(request)
+  }
+}
+async function applyTaskAction(command: TaskCommand) {
+  try { await afterTaskAction(await tasks.act(command), command) } catch (e) { showTaskError(e) }
+}
+async function retryTask() {
+  const intent = tasks.pending.value?.intent
+  const command = intent?.kind === 'command' ? parseTaskCommand(intent.text) : intent?.kind === 'action' ? intent.command : null
+  try { await afterTaskAction(await tasks.retry(), command ?? undefined) } catch (e) { showTaskError(e) }
+}
+async function createTask(goal: string, selection: TaskWorkflowSelection) {
+  try { await tasks.create(goal, selection) } catch (e) { showTaskError(e) }
 }
 
 function handleComposerClick(event: MouseEvent): void {
@@ -267,6 +344,7 @@ async function handleStop(): Promise<void> {
 }
 
 onMounted(() => {
+  void tasks.refresh()
   void $fetch(`/api/sessions/${props.session.id}/activate`, { method: 'POST' }).catch(() => {
     continuationError.value = 'Не удалось активировать диалог.'
   })
@@ -320,6 +398,9 @@ function dismissError(): void {
         <UBadge class="chat-status-badge" color="neutral" variant="subtle" role="status" aria-live="polite">{{ statusLabel }}</UBadge>
       </div>
     </header>
+
+    <ChatTaskPanel :tasks="tasks" :session-id="session.id" :disabled="!!historyClearPending" :streaming="isBusy" @action="applyTaskAction" @retry="retryTask" @create="createTask" />
+    <UButton v-if="resumeRequest" size="sm" :disabled="isBusy" @click="sendResume(resumeRequest)">Продолжить с сохранённого шага</UButton>
 
     <details v-if="props.contextStrategy.strategy === 'sticky_facts' && Object.keys(props.session.stickyFacts).length > 0" class="sticky-facts-panel">
       <summary>Sticky Facts · {{ Object.keys(props.session.stickyFacts).length }} фактов</summary>

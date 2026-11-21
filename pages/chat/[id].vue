@@ -76,6 +76,7 @@ async function loadSession(): Promise<void> {
     if (sessionId.value !== requestedId) return
     session.value = loadedSession
     const pendingClear = await memory.loadPendingHistoryClear(requestedId)
+    if (sessionId.value !== requestedId) return
     historyClearPending.value = pendingClear !== null
     if (pendingClear) operationError.value = 'Очистка истории этого диалога ожидает завершения. Откройте «Память», чтобы повторить операцию.'
     modelId.value = loadedSession.modelId ?? loadedSession.lastTurn?.modelId ?? defaultModel
@@ -347,7 +348,7 @@ async function handleUpdated(): Promise<void> {
       if (sessionId.value === id) operationError.value = 'Не удалось обновить состояние диалога. Перезагрузите страницу, чтобы проверить результат.'
     }),
     memory.loadPendingHistoryClear(id).then(pending => {
-      historyClearPending.value = pending !== null
+      if (sessionId.value === id) historyClearPending.value = pending !== null
     }).catch(() => undefined),
     loadUserProfiles(),
   ])
