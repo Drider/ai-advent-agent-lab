@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { MemoryError } from './errors'
 import { createMemoryUsageRepository } from './usage-repository'
+import { assertTaskSessionQuiescent, clearSessionTaskData } from '../tasks/cleanup'
 import type { HistoryClearResult } from '../../shared/memory'
 
 interface OperationRow {
@@ -67,6 +68,9 @@ export function createHistoryClearRepository(db: Database.Database) {
       }
       const timestamp = new Date().toISOString()
       const newRunLogId = nextRunLogId(db)
+
+      assertTaskSessionQuiescent(db, sessionId)
+      clearSessionTaskData(db, sessionId)
 
       const requestIds = db.prepare('SELECT request_id FROM turns WHERE session_id = ?').all(sessionId) as Array<{ request_id: string }>
       const insertRequest = db.prepare('INSERT OR IGNORE INTO cleared_requests (request_id, session_id, cleared_at) VALUES (?, ?, ?)')

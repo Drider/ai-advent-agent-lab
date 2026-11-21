@@ -1,5 +1,6 @@
 import type { LanguageModelUsage, UIMessage } from 'ai'
 import type { UserProfileSummary } from './user-profile'
+import type { TaskSnapshot, TaskView } from './task'
 
 export type ChatTokenUsage = Pick<LanguageModelUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
   & Partial<Pick<LanguageModelUsage, 'inputTokenDetails' | 'outputTokenDetails'>>
@@ -230,6 +231,8 @@ export interface SessionDetail extends SessionSummary {
   parent?: SessionBranchLink
   children: SessionBranchLink[]
   compactionAttempts: CompactionAttemptView[]
+  taskView: TaskView
+  taskHistory: TaskSnapshot[]
 }
 
 export const DEFAULT_CHAT_MODEL = 'deepseek/deepseek-v4.1-flash'

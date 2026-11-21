@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import MemoryBudgetSettings from '~/components/MemoryBudgetSettings.vue'
 import MemoryClearDialog from '~/components/MemoryClearDialog.vue'
 import MemoryEntryForm from '~/components/MemoryEntryForm.vue'
@@ -22,7 +22,7 @@ const budgets = ref<MemoryBudgets | null>(null)
 const preview = ref<MemoryPreview | null>(null)
 const statistics = ref<MemoryStatisticsData | null>(null)
 const globalStatistics = ref<MemoryStatisticsData | null>(null)
-const session = ref<SessionDetail | null>(null)
+const session = shallowRef<SessionDetail | null>(null)
 const workingItems = ref<WorkingMemoryEntry[]>([])
 const longTermItems = ref<LongTermFact[]>([])
 const workingCursor = ref<string | undefined>()

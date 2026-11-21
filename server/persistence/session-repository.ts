@@ -6,6 +6,8 @@ import { validateUIMessages } from 'ai'
 import { classifyAgentStopReason } from '../utils/agent-stop-reason'
 import { createTurnRepository } from './turn-repository'
 import { createFactsRepository } from '../context-compaction/facts-repository'
+import { createTaskService } from '../tasks/commands'
+import { createTaskRepository } from '../tasks/repository'
 import { MemoryError } from '../memory/errors'
 import { assertHistoryAvailable } from '../memory/clear-repository'
 import { createUserProfileRepository } from './user-profile-repository'
@@ -438,6 +440,12 @@ export function createSessionRepository(db: Database.Database) {
       WHERE parent_session_id = ?
       ORDER BY updated_at DESC, id DESC
     `).all(id) as Array<{ id: string; title: string; branch_source_message_id: string | null; updated_at: string }>
+    const taskRepository = createTaskRepository(db)
+    const taskHistory = taskRepository.list(id)
+    const currentTask = taskRepository.getUnfinished(id)
+    const taskView = currentTask
+      ? createTaskService(db).view(currentTask.id, id)
+      : { task: null, actions: [], approvals: [], validations: [], recoveryOperations: [] }
 
     return {
       ...toSummary(row, getTitle(db, row.id, row.title)),
@@ -459,6 +467,8 @@ export function createSessionRepository(db: Database.Database) {
       ...(parent === undefined ? {} : { parent: toBranchLink(parent) }),
       children: children.map(toBranchLink),
       compactionAttempts: getCompactionAttempts(db, id),
+      taskView,
+      taskHistory,
     }
   }
 
