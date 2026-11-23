@@ -27,6 +27,19 @@ function setup() {
 }
 
 describe('memory selection rules', () => {
+  it('includes the record update time and latest-value precedence in the prompt block', () => {
+    const { db, project, session, working } = setup()
+    working.create({ projectId: project.id, category: 'state', key: 'deadline', value: '15 декабря' })
+    db.prepare('UPDATE working_memory_entries SET updated_at = ? WHERE project_id = ?').run('2026-11-22T14:05:37.000Z', project.id)
+
+    const text = createMemorySnapshot(db, session.id).messages[0]?.parts
+      .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('') ?? ''
+    expect(text).toContain('- [state] deadline (2026-11-22 14:05 UTC): 15 декабря')
+    expect(text).toContain('If a memory record contradicts earlier dialogue messages, the memory record is authoritative.')
+  })
+
   it('includes required categories and excludes disabled, unrelated and out-of-scope records', () => {
     const { db, project, otherProject, session, working, longTerm } = setup()
     for (const category of ['goal', 'constraint', 'state'] as const) working.create({ projectId: project.id, category, key: category, value: 'required' })
@@ -97,7 +110,7 @@ describe('memory selection rules', () => {
     expect(snapshot.preview.longTerm.estimatedTokens).toBeLessThanOrEqual(300)
     expect(snapshot.longTermFacts).toHaveLength(2)
     expect(snapshot.preview.exclusions).toContainEqual({ id: oversized.id, revision: 0, layer: 'working', reason: 'budget_exceeded' })
-    expect(snapshot.messages[0]?.parts).toEqual([expect.objectContaining({ text: expect.stringContaining('- [note] b: sqlite') })])
+    expect(snapshot.messages[0]?.parts).toEqual([expect.objectContaining({ text: expect.stringContaining('- [note] b (') })])
     expect(JSON.stringify(snapshot.messages)).not.toContain(oversized.value)
   })
 

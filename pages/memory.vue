@@ -8,7 +8,7 @@ import MemoryStatistics from '~/components/MemoryStatistics.vue'
 import ProjectSelector from '~/components/ProjectSelector.vue'
 import { useMemory } from '~/composables/useMemory'
 import type { ChatUIMessage, SessionDetail } from '~/shared/chat'
-import type { HistoryClearResult, LongTermFact, MemoryBudgets, MemoryPreview, MemoryScope, MemoryStatistics as MemoryStatisticsData, Project, WorkingMemoryEntry } from '~/shared/memory'
+import type { HistoryClearResult, LongTermFact, MemoryBudgets, MemoryChange, MemoryPreview, MemoryScope, MemoryStatistics as MemoryStatisticsData, Project, WorkingMemoryEntry } from '~/shared/memory'
 
 type Layer = 'short_term' | 'working' | 'long_term'
 
@@ -22,6 +22,7 @@ const budgets = ref<MemoryBudgets | null>(null)
 const preview = ref<MemoryPreview | null>(null)
 const statistics = ref<MemoryStatisticsData | null>(null)
 const globalStatistics = ref<MemoryStatisticsData | null>(null)
+const changes = ref<MemoryChange[]>([])
 const session = ref<SessionDetail | null>(null)
 const workingItems = ref<WorkingMemoryEntry[]>([])
 const longTermItems = ref<LongTermFact[]>([])
@@ -82,6 +83,7 @@ async function loadData(): Promise<void> {
       memory.loadStatistics(currentScope.value),
       memory.loadStatistics({ scope: 'global' }),
     ])
+    changes.value = await memory.loadChanges({ ...(projectId.value ? { projectId: projectId.value } : {}), limit: 20 })
     budgets.value = loadedBudgets
     preview.value = loadedPreview
     statistics.value = loadedStatistics
@@ -208,6 +210,17 @@ function loadMore(): void {
   })()
 }
 
+function changeDescription(change: MemoryChange): string {
+  if (change.action === 'replace') return `${change.oldValue} → ${change.newValue ?? ''}`
+  if (change.action === 'forget') return 'удалено'
+  return 'очищено по завершении задачи'
+}
+
+function changeTime(change: MemoryChange): string {
+  const date = new Date(change.changedAt)
+  return Number.isNaN(date.getTime()) ? change.changedAt : `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`
+}
+
 watch([search, category], () => { void loadData() })
 watch(layer, () => { category.value = '' })
 watch(() => route.query, () => {
@@ -239,6 +252,15 @@ onMounted(() => { void loadData() })
       <section class="memory-page__content">
         <MemoryBudgetSettings v-if="budgets && preview" :budgets="budgets" :preview="preview" :saving="savingBudget" @save="saveBudget" />
         <MemoryStatistics v-if="statistics" :statistics="statistics" :preview="preview ?? undefined" />
+        <details class="memory-card memory-change-log" open>
+          <summary>Журнал изменений <span>({{ changes.length }})</span></summary>
+          <ol v-if="changes.length" class="memory-change-log__list">
+            <li v-for="change in changes" :key="change.id">
+              <div><strong>{{ change.memoryKey }}: {{ changeDescription(change) }}</strong><span>{{ change.layer === 'working' ? 'рабочая' : 'долговременная' }} · {{ changeTime(change) }}</span></div>
+            </li>
+          </ol>
+          <p v-else class="memory-empty">Изменений пока нет.</p>
+        </details>
         <section v-if="layer === 'short_term'" class="memory-card">
           <div class="memory-card__heading"><div><p class="memory-eyebrow">{{ session?.title ?? 'Диалог' }}</p><h2>История диалога</h2></div><button class="memory-button memory-button--danger" type="button" :disabled="!session" @click="openClear('short_term')">Очистить историю</button></div>
           <div v-if="session?.messages.length" class="memory-short-term-list"><article v-for="message in session.messages" :key="message.id"><span>{{ message.role }}</span><p>{{ message.parts.filter((part): part is Extract<ChatUIMessage['parts'][number], { type: 'text' }> => part.type === 'text').map(part => part.text).join('') }}</p></article></div>
@@ -271,6 +293,12 @@ onMounted(() => { void loadData() })
 .memory-page__filters { display: grid; gap: .45rem; }
 .memory-page__filters input, .memory-page__filters select { width: 100%; border: 1px solid #cbd5e1; border-radius: .45rem; padding: .5rem .55rem; color: #334155; background: #fff; font: inherit; font-size: .76rem; }
 .memory-card { border: 1px solid #dbe4ef; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 2px 10px rgb(15 23 42 / 3%); }
+.memory-change-log summary { cursor: pointer; color: #334155; font-size: .85rem; font-weight: 650; }
+.memory-change-log summary span { color: #64748b; font-weight: 400; }
+.memory-change-log__list { display: grid; gap: .55rem; margin: .8rem 0 0; padding-left: 1.1rem; }
+.memory-change-log__list li { color: #334155; font-size: .78rem; }
+.memory-change-log__list li div { display: grid; gap: .18rem; }
+.memory-change-log__list li span { color: #64748b; font-size: .7rem; }
 .memory-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; margin-bottom: .8rem; }
 .memory-card__heading h2 { margin: 0; font-size: 1rem; }
 .memory-eyebrow { margin: 0 0 .2rem; color: #64748b; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }

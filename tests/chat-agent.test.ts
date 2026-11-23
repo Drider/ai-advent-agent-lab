@@ -213,6 +213,24 @@ const frontendInvariant: Invariant = {
 }
 
 describe('chat agent', () => {
+  it('instructs the agent to store mutable project facts as state', () => {
+    const instructions = buildAgentInstructions()
+
+    expect(instructions).toContain('Use state for current mutable project facts such as selected approaches, versions, and statuses')
+    expect(instructions).toContain('When updating a mutable fact, keep both the same key and the state category')
+  })
+
+  it('exposes forget_memory alongside save_memory', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: textResult('Готово.'),
+    })
+
+    await createChatAgent(model).generate({ prompt: 'Проверь набор инструментов' })
+
+    const toolNames = model.doGenerateCalls[0]?.tools?.map(candidate => candidate.name) ?? []
+    expect(toolNames).toEqual(expect.arrayContaining(['save_memory', 'forget_memory']))
+  })
+
   it('includes onboarding questions and saved answers in task instructions', () => {
     const instructions = buildAgentInstructions(undefined, false, {
       id: 'task-1',

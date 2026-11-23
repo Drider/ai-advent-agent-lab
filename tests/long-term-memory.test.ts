@@ -5,6 +5,7 @@ import { createProjectRepository } from '../server/persistence/project-repositor
 import { createSessionRepository } from '../server/persistence/session-repository'
 import { createLongTermMemoryRepository } from '../server/memory/long-term-repository'
 import { MemoryError } from '../server/memory/errors'
+import { listMemoryChanges } from '../server/memory/change-log'
 
 const databases: ReturnType<typeof openChatDatabase>[] = []
 
@@ -61,5 +62,81 @@ describe('long-term memory', () => {
     db.prepare('DELETE FROM messages WHERE id = ?').run(messageId)
     expect(repository.list().items.find(item => item.id === second.id)).toMatchObject({ value: 'Saved', sourceSessionId: session.id })
     expect(db.prepare('SELECT source_message_id FROM long_term_facts WHERE id = ?').get(second.id)).toEqual({ source_message_id: null })
+  })
+
+  it('replaces overwriteable facts by normalized key within their scope', () => {
+    const { alpha, beta, repository, db } = setup()
+    const projectFact = repository.upsert({
+      category: 'knowledge',
+      key: ' Язык ',
+      value: 'Русский',
+      projectIds: [alpha.id],
+      recordedAt: '2026-11-22T10:00:00.000Z',
+    })
+    const replaced = repository.upsert({
+      category: 'profile',
+      key: 'язык',
+      value: 'English',
+      projectIds: [alpha.id],
+      recordedAt: '2026-11-22T11:00:00.000Z',
+    })
+    const otherProject = repository.upsert({
+      category: 'knowledge',
+      key: 'язык',
+      value: 'Deutsch',
+      projectIds: [beta.id],
+      recordedAt: '2026-11-22T12:00:00.000Z',
+    })
+    const global = repository.upsert({
+      category: 'profile',
+      key: 'язык',
+      value: 'Global',
+      global: true,
+      recordedAt: '2026-11-22T13:00:00.000Z',
+    })
+
+    expect(projectFact.status).toBe('created')
+    expect(replaced).toMatchObject({ status: 'replaced', previousValue: 'Русский', entry: { id: projectFact.entry.id, category: 'profile', value: 'English' } })
+    expect(otherProject.status).toBe('created')
+    expect(global.status).toBe('created')
+    expect(repository.list({ projectId: alpha.id }).items.map(item => item.value)).toEqual(expect.arrayContaining(['English', 'Global']))
+    expect(listMemoryChanges(db, { projectId: alpha.id, limit: 10 })).toEqual([
+      expect.objectContaining({ action: 'replace', oldValue: 'Русский', newValue: 'English', projectId: alpha.id }),
+    ])
+  })
+
+  it('appends decisions and returns stale for an older overwriteable fact', () => {
+    const { alpha, repository } = setup()
+    expect(repository.upsert({ category: 'decision', key: 'database', value: 'SQLite', projectIds: [alpha.id] }).status).toBe('appended')
+    expect(repository.upsert({ category: 'decision', key: 'database', value: 'Postgres', projectIds: [alpha.id] }).status).toBe('appended')
+    repository.upsert({ category: 'knowledge', key: 'status', value: 'new', projectIds: [alpha.id], recordedAt: '2026-11-22T11:00:00.000Z' })
+    const stale = repository.upsert({ category: 'knowledge', key: 'STATUS', value: 'old', projectIds: [alpha.id], recordedAt: '2026-11-22T10:00:00.000Z' })
+
+    expect(repository.list({ projectId: alpha.id }).items.map(item => item.value)).toEqual(expect.arrayContaining(['SQLite', 'Postgres', 'new']))
+    expect(stale).toMatchObject({ status: 'stale', entry: { value: 'new' } })
+  })
+
+  it('forgets all facts with a key in a project or global scope', () => {
+    const { alpha, beta, repository, db } = setup()
+    repository.create({ category: 'profile', key: 'Status', value: 'project', projectIds: [alpha.id] })
+    repository.create({ category: 'knowledge', key: ' status ', value: 'global', global: true })
+    repository.create({ category: 'decision', key: 'Status', value: 'decision', projectIds: [beta.id] })
+
+    expect(repository.forgetByKey({ projectId: alpha.id }, 'STATUS')).toEqual(['project'])
+    expect(repository.forgetByKey({ global: true }, 'status')).toEqual(['global'])
+    expect(repository.list({ projectId: beta.id }).items.map(item => item.value)).toEqual(['decision'])
+    expect(listMemoryChanges(db, { projectId: alpha.id, limit: 10 }).map(change => change.action)).toEqual(['forget', 'forget'])
+  })
+
+  it('logs value changes and removal from the memory editor', () => {
+    const { alpha, repository, db } = setup()
+    const fact = repository.create({ category: 'knowledge', key: 'status', value: 'draft', projectIds: [alpha.id] })
+    const updated = repository.update(fact.id, { value: 'ready', expectedRevision: fact.revision })
+    repository.remove(updated.id)
+
+    expect(listMemoryChanges(db, { projectId: alpha.id, limit: 10 }).map(change => ({ action: change.action, oldValue: change.oldValue, newValue: change.newValue }))).toEqual(expect.arrayContaining([
+      { action: 'forget', oldValue: 'ready', newValue: undefined },
+      { action: 'replace', oldValue: 'draft', newValue: 'ready' },
+    ]))
   })
 })

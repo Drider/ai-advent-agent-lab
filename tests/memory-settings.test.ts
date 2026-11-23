@@ -39,7 +39,7 @@ describe('memory settings', () => {
     const db = openChatDatabase(':memory:')
     databases.push(db)
 
-    expect(db.pragma('user_version', { simple: true })).toBe(18)
+    expect(db.pragma('user_version', { simple: true })).toBe(19)
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('projects', 'working_memory_entries', 'long_term_facts', 'project_long_term_facts', 'memory_settings', 'memory_usage_events', 'history_clear_operations', 'cleared_requests', 'cleared_tool_calls', 'model_configurations', 'user_profiles', 'user_profile_settings') ORDER BY name").all()).toEqual([
       { name: 'cleared_requests' },
       { name: 'cleared_tool_calls' },

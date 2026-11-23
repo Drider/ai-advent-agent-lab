@@ -5,6 +5,7 @@ import { createProjectRepository } from '../server/persistence/project-repositor
 import { createSessionRepository } from '../server/persistence/session-repository'
 import { createWorkingMemoryRepository } from '../server/memory/working-repository'
 import { MemoryError } from '../server/memory/errors'
+import { listMemoryChanges } from '../server/memory/change-log'
 
 const databases: ReturnType<typeof openChatDatabase>[] = []
 
@@ -52,5 +53,69 @@ describe('working memory', () => {
     expect(large.enabled).toBe(false)
     expect(() => repository.create({ projectId: randomUUID(), category: 'note', key: 'bad', value: 'value' })).toThrow(MemoryError)
     expect(() => repository.create({ projectId: project.id, category: 'note', key: 'bad', value: 'value', sourceSessionId: randomUUID() })).toThrow(MemoryError)
+  })
+
+  it('replaces overwriteable entries by normalized key and logs the old and new value', () => {
+    const { project, repository, db } = setup()
+    const first = repository.upsert({
+      projectId: project.id,
+      category: 'constraint',
+      key: ' СРОК ',
+      value: '1 декабря',
+      recordedAt: '2026-11-22T10:00:00.000Z',
+    })
+    const second = repository.upsert({
+      projectId: project.id,
+      category: 'state',
+      key: 'срок',
+      value: '15 декабря',
+      recordedAt: '2026-11-22T11:00:00.000Z',
+    })
+
+    expect(first.status).toBe('created')
+    expect(second).toMatchObject({ status: 'replaced', previousValue: '1 декабря', entry: { id: first.entry.id, category: 'state', value: '15 декабря' } })
+    expect(repository.list(project.id).items).toHaveLength(1)
+    expect(listMemoryChanges(db, { projectId: project.id, limit: 10 })).toEqual([
+      expect.objectContaining({ action: 'replace', oldValue: '1 декабря', newValue: '15 декабря', memoryKey: 'срок' }),
+    ])
+  })
+
+  it('appends result and note records instead of replacing them', () => {
+    const { project, repository } = setup()
+    expect(repository.upsert({ projectId: project.id, category: 'note', key: 'same', value: 'one' }).status).toBe('appended')
+    expect(repository.upsert({ projectId: project.id, category: 'note', key: 'same', value: 'two' }).status).toBe('appended')
+    expect(repository.list(project.id).items.map(item => item.value)).toEqual(expect.arrayContaining(['one', 'two']))
+  })
+
+  it('returns stale and keeps the newer value when recorded later than the incoming fact', () => {
+    const { project, repository } = setup()
+    repository.upsert({ projectId: project.id, category: 'state', key: 'status', value: 'new', recordedAt: '2026-11-22T11:00:00.000Z' })
+    const stale = repository.upsert({ projectId: project.id, category: 'state', key: 'STATUS', value: 'old', recordedAt: '2026-11-22T10:00:00.000Z' })
+
+    expect(stale).toMatchObject({ status: 'stale', entry: { value: 'new' } })
+    expect(repository.list(project.id).items).toHaveLength(1)
+  })
+
+  it('forgets every category with the normalized key and logs each deletion', () => {
+    const { project, repository, db } = setup()
+    repository.create({ projectId: project.id, category: 'goal', key: 'Status', value: 'goal' })
+    repository.create({ projectId: project.id, category: 'note', key: ' status ', value: 'note' })
+    repository.create({ projectId: project.id, category: 'state', key: 'other', value: 'keep' })
+
+    expect(repository.forgetByKey(project.id, 'STATUS')).toEqual(['goal', 'note'])
+    expect(repository.list(project.id).items.map(item => item.value)).toEqual(['keep'])
+    expect(listMemoryChanges(db, { projectId: project.id, limit: 10 }).map(change => change.action)).toEqual(['forget', 'forget'])
+  })
+
+  it('logs value changes from manual updates and removals', () => {
+    const { project, repository, db } = setup()
+    const entry = repository.create({ projectId: project.id, category: 'state', key: 'status', value: 'draft' })
+    const updated = repository.update(entry.id, { value: 'ready', expectedRevision: entry.revision })
+    repository.remove(updated.id)
+
+    expect(listMemoryChanges(db, { projectId: project.id, limit: 10 }).map(change => ({ action: change.action, oldValue: change.oldValue, newValue: change.newValue }))).toEqual(expect.arrayContaining([
+      { action: 'forget', oldValue: 'ready', newValue: undefined },
+      { action: 'replace', oldValue: 'draft', newValue: 'ready' },
+    ]))
   })
 })

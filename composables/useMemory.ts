@@ -4,6 +4,7 @@ import type {
   LongTermFact,
   MemoryBudgetPatch,
   MemoryBudgets,
+  MemoryChange,
   MemoryListQuery,
   MemoryPage,
   MemoryPreview,
@@ -36,6 +37,7 @@ export function useMemory() {
   const loadStatistics = (scope: MemoryScope) => $fetch<MemoryStatistics>('/api/memory/statistics', {
     query: scope.scope === 'dialogue' ? { scope: scope.scope, sessionId: scope.sessionId } : scope.scope === 'project' ? { scope: scope.scope, projectId: scope.projectId } : { scope: scope.scope },
   })
+  const loadChanges = (query?: { projectId?: string; limit?: number }) => $fetch<MemoryChange[]>('/api/memory/changes', { query })
   const clearWorking = (projectId: string) => $fetch<{ deleted: number }>('/api/memory/working/clear', { method: 'POST', body: { projectId } })
   const clearLongTerm = () => $fetch<{ deleted: number }>('/api/memory/long-term/clear', { method: 'POST' })
   const detachProject = (projectId: string) => $fetch<{ detached: number }>('/api/memory/long-term/detach-project', { method: 'POST', body: { projectId } })
@@ -57,6 +59,7 @@ export function useMemory() {
     updateBudgets,
     loadPreview,
     loadStatistics,
+    loadChanges,
     clearWorking,
     clearLongTerm,
     detachProject,

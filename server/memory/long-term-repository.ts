@@ -6,13 +6,17 @@ import type {
   LongTermMemoryCategory,
   MemoryListQuery,
   MemoryPage,
+  MemoryUpsertResult,
   UpdateLongTermFact,
+  UpsertLongTermFact,
 } from '../../shared/memory'
+import { recordMemoryChange } from './change-log'
 import { MemoryError } from './errors'
 
 const DEFAULT_PAGE_SIZE = 30
 const MAX_PAGE_SIZE = 100
 const CATEGORIES: ReadonlySet<LongTermMemoryCategory> = new Set(['profile', 'decision', 'knowledge'])
+const OVERWRITE_CATEGORIES: ReadonlySet<LongTermMemoryCategory> = new Set(['profile', 'knowledge'])
 const MAX_KEY_LENGTH = 80
 const MAX_VALUE_LENGTH = 10_000
 
@@ -30,10 +34,15 @@ interface FactRow {
   updated_at: string
 }
 
-function validateText(key: string, value: string): { key: string; value: string } {
+function validateKey(key: string): string {
   if (typeof key !== 'string' || key.trim().length < 1 || key.trim().length > MAX_KEY_LENGTH) throw new MemoryError('INVALID_INPUT', `key must be 1 to ${MAX_KEY_LENGTH} characters`)
+  return key.trim()
+}
+
+function validateText(key: string, value: string): { key: string; value: string } {
+  const normalizedKey = validateKey(key)
   if (typeof value !== 'string' || value.length < 1 || value.length > MAX_VALUE_LENGTH) throw new MemoryError('INVALID_INPUT', `value must be 1 to ${MAX_VALUE_LENGTH} characters`)
-  return { key: key.trim(), value }
+  return { key: normalizedKey, value }
 }
 
 function validateCategory(category: string): asserts category is LongTermMemoryCategory {
@@ -42,6 +51,16 @@ function validateCategory(category: string): asserts category is LongTermMemoryC
 
 function validateRevision(revision: number): void {
   if (!Number.isSafeInteger(revision) || revision < 0) throw new MemoryError('INVALID_INPUT', 'expectedRevision must be a non-negative integer')
+}
+
+function normalizeKey(key: string): string {
+  return key.trim().toLocaleLowerCase()
+}
+
+function validateTimestamp(value: string | undefined): string {
+  const timestamp = value ?? new Date().toISOString()
+  if (Number.isNaN(Date.parse(timestamp))) throw new MemoryError('INVALID_INPUT', 'recordedAt must be a valid timestamp')
+  return timestamp
 }
 
 function decodeCursor(cursor: string | undefined): { category: string; key: string; id: string } | undefined {
@@ -79,6 +98,17 @@ function validateProjectIds(db: Database.Database, projectIds: string[]): string
 }
 
 export function createLongTermMemoryRepository(db: Database.Database) {
+  const selectById = (id: string): FactRow | undefined => db.prepare(`
+    SELECT id, category, memory_key, value, enabled, global_enabled,
+           source_session_id, source_message_id, revision, created_at, updated_at
+    FROM long_term_facts WHERE id = ?
+  `).get(id) as FactRow | undefined
+
+  const projectIdForFact = (id: string): string | undefined => {
+    const row = db.prepare('SELECT project_id FROM project_long_term_facts WHERE fact_id = ? ORDER BY project_id ASC LIMIT 1').get(id) as { project_id: string } | undefined
+    return row?.project_id
+  }
+
   function toFact(row: FactRow): LongTermFact {
     const projectIds = (db.prepare('SELECT project_id FROM project_long_term_facts WHERE fact_id = ? ORDER BY project_id ASC').all(row.id) as Array<{ project_id: string }>).map(item => item.project_id)
     return {
@@ -135,42 +165,96 @@ export function createLongTermMemoryRepository(db: Database.Database) {
     }
   }
 
+  function createInternal(input: CreateLongTermFact, projectIds: string[], timestamp: string): LongTermFact {
+    const id = randomUUID()
+    db.prepare(`
+      INSERT INTO long_term_facts
+        (id, category, memory_key, value, enabled, global_enabled, source_session_id, source_message_id, revision, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(id, input.category, input.key, input.value, input.enabled === false ? 0 : 1, input.global === true ? 1 : 0, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, timestamp)
+    const insertLink = db.prepare('INSERT INTO project_long_term_facts (fact_id, project_id, created_at) VALUES (?, ?, ?)')
+    for (const projectId of projectIds) insertLink.run(id, projectId, timestamp)
+    return toFact(selectById(id)!)
+  }
+
   function create(input: CreateLongTermFact): LongTermFact {
     validateCategory(input.category)
     const { key, value } = validateText(input.key, input.value)
     validateSource(db, input.sourceSessionId, input.sourceMessageId)
     const projectIds = validateProjectIds(db, input.projectIds ?? [])
-    const id = randomUUID()
-    const timestamp = new Date().toISOString()
-    const transaction = db.transaction(() => {
-      db.prepare(`
-        INSERT INTO long_term_facts
-          (id, category, memory_key, value, enabled, global_enabled, source_session_id, source_message_id, revision, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-      `).run(id, input.category, key, value, input.enabled === false ? 0 : 1, input.global === true ? 1 : 0, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, timestamp)
+    return db.transaction(() => createInternal({ ...input, key, value }, projectIds, new Date().toISOString())).immediate()
+  }
+
+  function upsert(input: UpsertLongTermFact): MemoryUpsertResult<LongTermFact> {
+    validateCategory(input.category)
+    const { key, value } = validateText(input.key, input.value)
+    validateSource(db, input.sourceSessionId, input.sourceMessageId)
+    const projectIds = validateProjectIds(db, input.projectIds ?? [])
+    const timestamp = validateTimestamp(input.recordedAt)
+    const isGlobal = input.global === true
+    return db.transaction(() => {
+      if (!OVERWRITE_CATEGORIES.has(input.category)) {
+        return { status: 'appended' as const, entry: createInternal({ ...input, key, value }, projectIds, timestamp) }
+      }
+
+      const rows = db.prepare(`
+        SELECT id, category, memory_key, value, enabled, global_enabled,
+               source_session_id, source_message_id, revision, created_at, updated_at
+        FROM long_term_facts
+        WHERE global_enabled = ?
+          AND ${isGlobal ? '1 = 1' : 'EXISTS (SELECT 1 FROM project_long_term_facts AS link WHERE link.fact_id = long_term_facts.id AND link.project_id = ?)'}
+      `).all(...(isGlobal ? [1] : [0, projectIds[0]])) as FactRow[]
+      const current = rows.find(row => normalizeKey(row.memory_key) === normalizeKey(key))
+      if (!current) return { status: 'created' as const, entry: createInternal({ ...input, key, value }, projectIds, timestamp) }
+      if (Date.parse(current.updated_at) > Date.parse(timestamp)) {
+        return { status: 'stale' as const, entry: toFact(current) }
+      }
+
+      const result = db.prepare(`
+        UPDATE long_term_facts
+        SET category = ?, memory_key = ?, value = ?, enabled = ?, global_enabled = ?,
+            source_session_id = ?, source_message_id = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ?
+      `).run(input.category, key, value, input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0, isGlobal ? 1 : 0, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, current.id, current.revision)
+      if (result.changes !== 1) throw new MemoryError('REVISION_CONFLICT', 'long-term fact was changed by another request')
+      db.prepare('DELETE FROM project_long_term_facts WHERE fact_id = ?').run(current.id)
       const insertLink = db.prepare('INSERT INTO project_long_term_facts (fact_id, project_id, created_at) VALUES (?, ?, ?)')
-      for (const projectId of projectIds) insertLink.run(id, projectId, timestamp)
-    })
-    transaction.immediate()
-    return toFact(db.prepare('SELECT id, category, memory_key, value, enabled, global_enabled, source_session_id, source_message_id, revision, created_at, updated_at FROM long_term_facts WHERE id = ?').get(id) as FactRow)
+      for (const projectId of projectIds) insertLink.run(current.id, projectId, timestamp)
+      if (current.value !== value) {
+        recordMemoryChange(db, {
+          id: randomUUID(),
+          layer: 'long_term',
+          entryId: current.id,
+          ...(isGlobal ? {} : projectIds[0] === undefined ? {} : { projectId: projectIds[0] }),
+          category: input.category,
+          memoryKey: key,
+          action: 'replace',
+          oldValue: current.value,
+          newValue: value,
+          ...(input.sourceSessionId === undefined ? {} : { sourceSessionId: input.sourceSessionId }),
+          changedAt: timestamp,
+        })
+      }
+      return { status: 'replaced' as const, entry: toFact(selectById(current.id)!), previousValue: current.value }
+    }).immediate()
   }
 
   function update(id: string, patch: UpdateLongTermFact): LongTermFact {
     validateRevision(patch.expectedRevision)
-    const current = db.prepare('SELECT category, memory_key, value, enabled, global_enabled FROM long_term_facts WHERE id = ?').get(id) as { category: LongTermMemoryCategory; memory_key: string; value: string; enabled: number; global_enabled: number } | undefined
+    const current = selectById(id)
     if (!current) throw new MemoryError('NOT_FOUND', 'long-term fact was not found')
     if (patch.category !== undefined) validateCategory(patch.category)
     const text = validateText(patch.key ?? current.memory_key, patch.value ?? current.value)
     const projectIds = patch.projectIds === undefined ? undefined : validateProjectIds(db, patch.projectIds)
     const timestamp = new Date().toISOString()
-    const transaction = db.transaction(() => {
+    return db.transaction(() => {
       const result = db.prepare(`
         UPDATE long_term_facts
         SET category = ?, memory_key = ?, value = ?, enabled = ?, global_enabled = ?, revision = revision + 1, updated_at = ?
         WHERE id = ? AND revision = ?
       `).run(patch.category ?? current.category, text.key, text.value, patch.enabled === undefined ? current.enabled : patch.enabled ? 1 : 0, patch.global === undefined ? current.global_enabled : patch.global ? 1 : 0, timestamp, id, patch.expectedRevision)
       if (result.changes !== 1) {
-        if (!db.prepare('SELECT 1 FROM long_term_facts WHERE id = ?').get(id)) throw new MemoryError('NOT_FOUND', 'long-term fact was not found')
+        if (!selectById(id)) throw new MemoryError('NOT_FOUND', 'long-term fact was not found')
         throw new MemoryError('REVISION_CONFLICT', 'long-term fact was changed by another request')
       }
       if (projectIds !== undefined) {
@@ -178,14 +262,62 @@ export function createLongTermMemoryRepository(db: Database.Database) {
         const insertLink = db.prepare('INSERT INTO project_long_term_facts (fact_id, project_id, created_at) VALUES (?, ?, ?)')
         for (const projectId of projectIds) insertLink.run(id, projectId, timestamp)
       }
-    })
-    transaction.immediate()
-    return toFact(db.prepare('SELECT id, category, memory_key, value, enabled, global_enabled, source_session_id, source_message_id, revision, created_at, updated_at FROM long_term_facts WHERE id = ?').get(id) as FactRow)
+      if (current.value !== text.value) {
+        const projectId = current.global_enabled === 1 ? undefined : projectIdForFact(id)
+        recordMemoryChange(db, {
+          id: randomUUID(),
+          layer: 'long_term',
+          entryId: id,
+          ...(projectId === undefined ? {} : { projectId }),
+          category: patch.category ?? current.category,
+          memoryKey: text.key,
+          action: 'replace',
+          oldValue: current.value,
+          newValue: text.value,
+          ...(current.source_session_id === null ? {} : { sourceSessionId: current.source_session_id }),
+          changedAt: timestamp,
+        })
+      }
+      return toFact(selectById(id)!)
+    }).immediate()
   }
 
   function remove(id: string): void {
-    const result = db.prepare('DELETE FROM long_term_facts WHERE id = ?').run(id)
-    if (result.changes === 0) throw new MemoryError('NOT_FOUND', 'long-term fact was not found')
+    db.transaction(() => {
+      const current = selectById(id)
+      if (!current) throw new MemoryError('NOT_FOUND', 'long-term fact was not found')
+      const fact = toFact(current)
+      db.prepare('DELETE FROM long_term_facts WHERE id = ?').run(id)
+      recordMemoryChange(db, {
+        id: randomUUID(),
+        layer: 'long_term',
+        entryId: id,
+        ...(fact.global || fact.projectIds[0] === undefined ? {} : { projectId: fact.projectIds[0] }),
+        category: fact.category,
+        memoryKey: fact.key,
+        action: 'forget',
+        oldValue: fact.value,
+        ...(fact.sourceSessionId === undefined ? {} : { sourceSessionId: fact.sourceSessionId }),
+        changedAt: new Date().toISOString(),
+      })
+    }).immediate()
+  }
+
+  function forgetByKey(scope: { global?: boolean; projectId?: string }, key: string): string[] {
+    const normalized = normalizeKey(validateKey(key))
+    if (scope.global === true && scope.projectId !== undefined) throw new MemoryError('INVALID_INPUT', 'memory scope is ambiguous')
+    if (scope.global !== true && scope.projectId === undefined) throw new MemoryError('INVALID_INPUT', 'projectId is required for project memory')
+    if (scope.projectId !== undefined) validateProjectIds(db, [scope.projectId])
+    const rows = db.prepare(`
+      SELECT id, category, memory_key, value, enabled, global_enabled,
+             source_session_id, source_message_id, revision, created_at, updated_at
+      FROM long_term_facts
+      WHERE global_enabled = ?
+        AND ${scope.global === true ? '1 = 1' : 'EXISTS (SELECT 1 FROM project_long_term_facts AS link WHERE link.fact_id = long_term_facts.id AND link.project_id = ?)'}
+    `).all(...(scope.global === true ? [1] : [0, scope.projectId])) as FactRow[]
+    const matches = rows.filter(row => normalizeKey(row.memory_key) === normalized)
+    for (const row of matches) remove(row.id)
+    return matches.map(row => row.value)
   }
 
   function clear(): number {
@@ -206,5 +338,5 @@ export function createLongTermMemoryRepository(db: Database.Database) {
     return transaction.immediate()
   }
 
-  return { list, create, update, remove, clear, detachProject }
+  return { list, create, update, remove, upsert, forgetByKey, clear, detachProject }
 }

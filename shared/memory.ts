@@ -71,6 +71,23 @@ export interface MemoryPage<T> {
 
 export type MemoryLayer = 'working' | 'long_term'
 
+export type MemoryChangeAction = 'replace' | 'forget' | 'task_cleanup'
+export type MemoryChangeCategory = WorkingMemoryCategory | LongTermMemoryCategory
+
+export interface MemoryChange {
+  id: string
+  layer: MemoryLayer
+  entryId: string
+  projectId?: string
+  category: MemoryChangeCategory
+  memoryKey: string
+  action: MemoryChangeAction
+  oldValue: string
+  newValue?: string
+  sourceSessionId?: string
+  changedAt: string
+}
+
 export type MemoryExclusionReason = 'disabled' | 'not_relevant' | 'budget_exceeded'
 
 export interface MemoryExclusionRef {
@@ -199,6 +216,10 @@ export interface CreateWorkingEntry extends MemorySource {
   enabled?: boolean
 }
 
+export interface UpsertWorkingEntry extends CreateWorkingEntry {
+  recordedAt?: string
+}
+
 export interface UpdateWorkingEntry {
   category?: WorkingMemoryCategory
   key?: string
@@ -214,6 +235,18 @@ export interface CreateLongTermFact extends MemorySource {
   enabled?: boolean
   global?: boolean
   projectIds?: string[]
+}
+
+export interface UpsertLongTermFact extends CreateLongTermFact {
+  recordedAt?: string
+}
+
+export type MemoryUpsertStatus = 'created' | 'replaced' | 'appended' | 'stale'
+
+export interface MemoryUpsertResult<T> {
+  status: MemoryUpsertStatus
+  entry: T
+  previousValue?: string
 }
 
 export interface UpdateLongTermFact {

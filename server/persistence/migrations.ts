@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 import { INITIAL_INVARIANTS } from '../../shared/invariant'
 
-export const CHAT_SCHEMA_VERSION = 18
+export const CHAT_SCHEMA_VERSION = 19
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -544,6 +544,25 @@ export function migrateChatDatabase(db: Database.Database): void {
           timestamp,
         )
       }
+    }
+    if (currentVersion < 19) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_changes (
+          id TEXT PRIMARY KEY,
+          layer TEXT NOT NULL CHECK (layer IN ('working', 'long_term')),
+          entry_id TEXT NOT NULL,
+          project_id TEXT,
+          category TEXT NOT NULL,
+          memory_key TEXT NOT NULL,
+          action TEXT NOT NULL CHECK (action IN ('replace', 'forget', 'task_cleanup')),
+          old_value TEXT NOT NULL,
+          new_value TEXT,
+          source_session_id TEXT,
+          changed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS memory_changes_changed_at_idx
+          ON memory_changes (changed_at DESC, id DESC);
+      `)
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')

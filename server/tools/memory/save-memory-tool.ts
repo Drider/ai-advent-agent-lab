@@ -6,7 +6,7 @@ import { createWorkingMemoryRepository } from '../../memory/working-repository'
 
 const memoryInputSchema = z.object({
   layer: z.enum(['working', 'long_term']).describe('Use working for requests to save to project memory unless long-term memory is explicitly requested. Use long_term only for explicit long-term, global, or cross-project memory requests; never infer it from the fact type.'),
-  category: z.enum(['goal', 'constraint', 'state', 'result', 'note', 'profile', 'decision', 'knowledge']).describe('Choose within the requested layer: working uses goal, constraint, state, result, or note (including project knowledge and decisions); long_term uses profile, decision, or knowledge.'),
+  category: z.enum(['goal', 'constraint', 'state', 'result', 'note', 'profile', 'decision', 'knowledge']).describe('Choose within the requested layer: working uses goal for objectives, constraint for requirements or deadlines. Use state for current mutable facts such as selected approaches, versions, and statuses. Use result for completed outcomes. Use note only for append-only observations or history. Long-term uses profile, decision, or knowledge.'),
   scope: z.enum(['current_project', 'global']).describe('Use current_project for project memory. Use global only when the user explicitly requests global or cross-project memory; global requires layer=long_term.'),
   key: z.string().trim().min(1).max(80).describe('Short, stable title for this memory record.'),
   value: z.string().min(1).max(10_000).describe('The exact useful fact or project state to remember.'),
@@ -23,7 +23,7 @@ export function createSaveMemoryTool(options: {
   projectId?: string
 } = {}) {
   return tool({
-    description: 'Save a memory record only when the user explicitly asks you to remember, save, or store information. A request to save to project memory ("сохрани в память проекта") means working/current_project, even for knowledge or decisions: use category=note for these. Use long_term only when the user explicitly requests long-term, global, or cross-project memory. Global scope requires an explicit global or cross-project request. The requested layer takes priority over the content type. Project scope always means the current chat project.',
+    description: 'Save a memory record only when the user explicitly asks you to remember, save, or store information. A request to save to project memory ("сохрани в память проекта") means working/current_project, even for stable knowledge or decisions. Use working/current_project for that request. Use state for current mutable facts such as selected approaches, versions, and statuses. Use constraint for requirements or deadlines. Use note only for append-only observations or history. Use long_term only when the user explicitly requests long-term, global, or cross-project memory. Global scope requires an explicit global or cross-project request. The requested layer takes priority over the content type. Project scope always means the current chat project. Overwriteable categories (goal, constraint, state, profile, knowledge) replace the current value under the same key; result, note, and decision are appended. To update a mutable fact, use both the same key and the state category as the memory block.',
     inputSchema: memoryInputSchema,
     execute: async ({ layer, category, scope, key, value }) => {
       if (!options.db || !options.sessionId) {
@@ -41,21 +41,24 @@ export function createSaveMemoryTool(options: {
           return { saved: false, error: 'This chat is not attached to a project. Select or create a project before saving project memory.' }
         }
 
-        const entry = createWorkingMemoryRepository(options.db).create({
+        const result = createWorkingMemoryRepository(options.db).upsert({
           projectId: options.projectId,
           category: category as 'goal' | 'constraint' | 'state' | 'result' | 'note',
           key,
           value,
           sourceSessionId: options.sessionId,
         })
+        const entry = result.entry
         return {
-          saved: true,
+          saved: result.status !== 'stale',
+          status: result.status,
           layer,
           scope,
           category: entry.category,
           key: entry.key,
           value: entry.value,
           id: entry.id,
+          ...(result.previousValue === undefined ? {} : { previousValue: result.previousValue }),
         }
       }
 
@@ -66,7 +69,7 @@ export function createSaveMemoryTool(options: {
         return { saved: false, error: 'This chat is not attached to a project. Select or create a project before saving project-scoped long-term memory.' }
       }
 
-      const fact = createLongTermMemoryRepository(options.db).create({
+      const result = createLongTermMemoryRepository(options.db).upsert({
         category: category as 'profile' | 'decision' | 'knowledge',
         key,
         value,
@@ -74,14 +77,17 @@ export function createSaveMemoryTool(options: {
         projectIds: scope === 'current_project' && options.projectId ? [options.projectId] : [],
         sourceSessionId: options.sessionId,
       })
+      const fact = result.entry
       return {
-        saved: true,
+        saved: result.status !== 'stale',
+        status: result.status,
         layer,
         scope,
         category: fact.category,
         key: fact.key,
         value: fact.value,
         id: fact.id,
+        ...(result.previousValue === undefined ? {} : { previousValue: result.previousValue }),
       }
     },
   })

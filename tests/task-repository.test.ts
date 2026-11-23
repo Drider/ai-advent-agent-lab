@@ -8,6 +8,10 @@ import { createSessionRepository } from '../server/persistence/session-repositor
 import { createTaskRepository } from '../server/persistence/task-repository'
 import { createTurnRepository } from '../server/persistence/turn-repository'
 import { createTaskMetrics } from '../server/tasks/metrics'
+import { createProjectRepository } from '../server/persistence/project-repository'
+import { createWorkingMemoryRepository } from '../server/memory/working-repository'
+import { createLongTermMemoryRepository } from '../server/memory/long-term-repository'
+import { listMemoryChanges } from '../server/memory/change-log'
 import { TASK_TEMPLATES, type TaskState } from '../shared/task'
 
 const databases: ReturnType<typeof openChatDatabase>[] = []
@@ -610,5 +614,53 @@ describe('task repository', () => {
     finishTurn(db, turnId)
 
     expect(tasks.approve(session.id, 'released')).toMatchObject({ stage: 'released', status: 'done' })
+  })
+
+  it('cleans project working memory on done and cancelled tasks but keeps long-term facts', () => {
+    TASK_TEMPLATES.push({
+      id: 'memory-cleanup-test',
+      name: 'Memory cleanup test',
+      stages: [
+        { id: 'draft', title: 'Draft', agentAction: 'Draft', next: ['released'] },
+        { id: 'released', title: 'Released', agentAction: '', next: [] },
+      ],
+    })
+    const db = createDb()
+    const project = createProjectRepository(db).create('Memory project')
+    const session = createSessionRepository(db).createSession({ projectId: project.id })
+    const tasks = createTaskRepository(db)
+    const working = createWorkingMemoryRepository(db)
+    const longTerm = createLongTermMemoryRepository(db)
+    tasks.start(session.id, { templateId: 'memory-cleanup-test', goal: 'Проверить очистку' })
+    working.create({ projectId: project.id, category: 'state', key: 'status', value: 'active' })
+    const fact = longTerm.create({ category: 'decision', key: 'database', value: 'SQLite', projectIds: [project.id] })
+    const turnId = reserveTurn(db, session.id)
+    const pending = tasks.requestTransition(session.id, { to: 'released', summary: 'Готово' }, { turnId })
+    finishTurn(db, turnId)
+
+    expect(tasks.approve(session.id, { pendingTransitionId: pending.pendingTransition!.id, expectedRevision: pending.revision })).toMatchObject({ status: 'done' })
+    expect(working.list(project.id).items).toEqual([])
+    expect(longTerm.list({ projectId: project.id }).items).toEqual([fact])
+    expect(listMemoryChanges(db, { projectId: project.id, limit: 10 })).toEqual([
+      expect.objectContaining({ action: 'task_cleanup', oldValue: 'active', sourceSessionId: session.id }),
+    ])
+
+    const cancelledSession = createSessionRepository(db).createSession({ projectId: project.id })
+    tasks.start(cancelledSession.id, { templateId: 'memory-cleanup-test', goal: 'Отменить' })
+    working.create({ projectId: project.id, category: 'state', key: 'cancelled', value: 'yes' })
+    expect(tasks.cancel(cancelledSession.id).status).toBe('cancelled')
+    expect(working.list(project.id).items).toEqual([])
+    expect(listMemoryChanges(db, { projectId: project.id, limit: 10 })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'task_cleanup', oldValue: 'yes', sourceSessionId: cancelledSession.id }),
+    ]))
+  })
+
+  it('finishes a task without a project without touching memory or throwing', () => {
+    const db = createDb()
+    const session = createSessionRepository(db).createSession()
+    const tasks = createTaskRepository(db)
+    tasks.start(session.id, { templateId: 'dev', goal: 'Без проекта' })
+
+    expect(tasks.cancel(session.id)).toMatchObject({ status: 'cancelled' })
   })
 })

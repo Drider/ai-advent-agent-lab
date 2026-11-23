@@ -5,7 +5,7 @@ import type { ChatRuntimeConfig } from '../utils/chat-request'
 import { parseChatPayload, resolveChatConfig } from '../utils/chat-request'
 import { getAgentConfig, streamChatAgent } from '../agent/chat-agent'
 import { createDiceTool, createListSavedRollsTool } from '../tools/dice'
-import { createSaveMemoryTool } from '../tools/memory'
+import { createForgetMemoryTool, createSaveMemoryTool } from '../tools/memory'
 import { createModelConfigurationTools } from '../tools/model-configurations'
 import { createUserProfileTools } from '../tools/user-profiles'
 import { createTaskTools } from '../tools/tasks'
@@ -185,6 +185,7 @@ export default defineEventHandler(async (event) => {
       turnRepository: turns,
       disableMutatingTools: request.kind === 'continue',
       saveMemoryTool: createSaveMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
+      forgetMemoryTool: createForgetMemoryTool({ db, sessionId: request.sessionId, projectId: session.projectId }),
       modelConfigurationTools: createModelConfigurationTools({ db }),
       userProfileTools: createUserProfileTools({ db, sessionId: request.sessionId, turnId }),
       task: taskSnapshot,

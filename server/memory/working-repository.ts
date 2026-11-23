@@ -4,15 +4,19 @@ import type {
   CreateWorkingEntry,
   MemoryListQuery,
   MemoryPage,
+  MemoryUpsertResult,
+  UpsertWorkingEntry,
   UpdateWorkingEntry,
   WorkingMemoryCategory,
   WorkingMemoryEntry,
 } from '../../shared/memory'
+import { recordMemoryChange } from './change-log'
 import { MemoryError } from './errors'
 
 const DEFAULT_PAGE_SIZE = 30
 const MAX_PAGE_SIZE = 100
 const CATEGORIES: ReadonlySet<WorkingMemoryCategory> = new Set(['goal', 'constraint', 'state', 'result', 'note'])
+const OVERWRITE_CATEGORIES: ReadonlySet<WorkingMemoryCategory> = new Set(['goal', 'constraint', 'state'])
 const MAX_KEY_LENGTH = 80
 const MAX_VALUE_LENGTH = 10_000
 
@@ -46,14 +50,19 @@ function toEntry(row: WorkingRow): WorkingMemoryEntry {
   }
 }
 
-function validateText(key: string, value: string): { key: string; value: string } {
+function validateKey(key: string): string {
   if (typeof key !== 'string' || key.trim().length < 1 || key.trim().length > MAX_KEY_LENGTH) {
     throw new MemoryError('INVALID_INPUT', `key must be 1 to ${MAX_KEY_LENGTH} characters`)
   }
+  return key.trim()
+}
+
+function validateText(key: string, value: string): { key: string; value: string } {
+  const normalizedKey = validateKey(key)
   if (typeof value !== 'string' || value.length < 1 || value.length > MAX_VALUE_LENGTH) {
     throw new MemoryError('INVALID_INPUT', `value must be 1 to ${MAX_VALUE_LENGTH} characters`)
   }
-  return { key: key.trim(), value }
+  return { key: normalizedKey, value }
 }
 
 function validateCategory(category: string): asserts category is WorkingMemoryCategory {
@@ -62,6 +71,16 @@ function validateCategory(category: string): asserts category is WorkingMemoryCa
 
 function validateRevision(revision: number): void {
   if (!Number.isSafeInteger(revision) || revision < 0) throw new MemoryError('INVALID_INPUT', 'expectedRevision must be a non-negative integer')
+}
+
+function normalizeKey(key: string): string {
+  return key.trim().toLocaleLowerCase()
+}
+
+function validateTimestamp(value: string | undefined): string {
+  const timestamp = value ?? new Date().toISOString()
+  if (Number.isNaN(Date.parse(timestamp))) throw new MemoryError('INVALID_INPUT', 'recordedAt must be a valid timestamp')
+  return timestamp
 }
 
 function decodeCursor(cursor: string | undefined): { category: string; key: string; id: string } | undefined {
@@ -95,6 +114,12 @@ function validateSource(db: Database.Database, sourceSessionId: string | undefin
 }
 
 export function createWorkingMemoryRepository(db: Database.Database) {
+  const selectById = (id: string): WorkingRow | undefined => db.prepare(`
+    SELECT id, project_id, category, memory_key, value, enabled,
+           source_session_id, source_message_id, revision, created_at, updated_at
+    FROM working_memory_entries WHERE id = ?
+  `).get(id) as WorkingRow | undefined
+
   function assertProject(projectId: string): void {
     if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId)) throw new MemoryError('NOT_FOUND', 'project was not found')
   }
@@ -134,49 +159,141 @@ export function createWorkingMemoryRepository(db: Database.Database) {
     }
   }
 
+  function createInternal(input: CreateWorkingEntry, timestamp: string): WorkingMemoryEntry {
+    const id = randomUUID()
+    db.prepare(`
+      INSERT INTO working_memory_entries
+        (id, project_id, category, memory_key, value, enabled, source_session_id, source_message_id, revision, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(id, input.projectId, input.category, input.key, input.value, input.enabled === false ? 0 : 1, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, timestamp)
+    return toEntry(selectById(id)!)
+  }
+
   function create(input: CreateWorkingEntry): WorkingMemoryEntry {
     validateCategory(input.category)
     const { key, value } = validateText(input.key, input.value)
     assertProject(input.projectId)
     validateSource(db, input.sourceSessionId, input.sourceMessageId, input.projectId)
-    const id = randomUUID()
-    const timestamp = new Date().toISOString()
-    db.prepare(`
-      INSERT INTO working_memory_entries
-        (id, project_id, category, memory_key, value, enabled, source_session_id, source_message_id, revision, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-    `).run(id, input.projectId, input.category, key, value, input.enabled === false ? 0 : 1, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, timestamp)
-    return toEntry(db.prepare('SELECT id, project_id, category, memory_key, value, enabled, source_session_id, source_message_id, revision, created_at, updated_at FROM working_memory_entries WHERE id = ?').get(id) as WorkingRow)
+    return createInternal({ ...input, key, value }, new Date().toISOString())
+  }
+
+  function upsert(input: UpsertWorkingEntry): MemoryUpsertResult<WorkingMemoryEntry> {
+    validateCategory(input.category)
+    const { key, value } = validateText(input.key, input.value)
+    assertProject(input.projectId)
+    validateSource(db, input.sourceSessionId, input.sourceMessageId, input.projectId)
+    const timestamp = validateTimestamp(input.recordedAt)
+    return db.transaction(() => {
+      if (!OVERWRITE_CATEGORIES.has(input.category)) {
+        return { status: 'appended' as const, entry: createInternal({ ...input, key, value }, timestamp) }
+      }
+
+      const rows = db.prepare(`
+        SELECT id, project_id, category, memory_key, value, enabled,
+               source_session_id, source_message_id, revision, created_at, updated_at
+        FROM working_memory_entries WHERE project_id = ?
+      `).all(input.projectId) as WorkingRow[]
+      const current = rows.find(row => normalizeKey(row.memory_key) === normalizeKey(key))
+      if (!current) return { status: 'created' as const, entry: createInternal({ ...input, key, value }, timestamp) }
+      if (Date.parse(current.updated_at) > Date.parse(timestamp)) {
+        return { status: 'stale' as const, entry: toEntry(current) }
+      }
+
+      const result = db.prepare(`
+        UPDATE working_memory_entries
+        SET category = ?, memory_key = ?, value = ?, enabled = ?, source_session_id = ?, source_message_id = ?,
+            revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ?
+      `).run(input.category, key, value, input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0, input.sourceSessionId ?? null, input.sourceMessageId ?? null, timestamp, current.id, current.revision)
+      if (result.changes !== 1) throw new MemoryError('REVISION_CONFLICT', 'working memory entry was changed by another request')
+      if (current.value !== value) {
+        recordMemoryChange(db, {
+          id: randomUUID(),
+          layer: 'working',
+          entryId: current.id,
+          projectId: current.project_id,
+          category: input.category,
+          memoryKey: key,
+          action: 'replace',
+          oldValue: current.value,
+          newValue: value,
+          ...(input.sourceSessionId === undefined ? {} : { sourceSessionId: input.sourceSessionId }),
+          changedAt: timestamp,
+        })
+      }
+      return { status: 'replaced' as const, entry: toEntry(selectById(current.id)!), previousValue: current.value }
+    }).immediate()
   }
 
   function update(id: string, patch: UpdateWorkingEntry): WorkingMemoryEntry {
     validateRevision(patch.expectedRevision)
     if (patch.category !== undefined) validateCategory(patch.category)
-    if (patch.key !== undefined || patch.value !== undefined) {
-      const current = db.prepare('SELECT memory_key, value FROM working_memory_entries WHERE id = ?').get(id) as { memory_key: string; value: string } | undefined
-      if (!current) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
-      validateText(patch.key ?? current.memory_key, patch.value ?? current.value)
-    }
-    const current = db.prepare('SELECT category, memory_key, value, enabled FROM working_memory_entries WHERE id = ?').get(id) as { category: WorkingMemoryCategory; memory_key: string; value: string; enabled: number } | undefined
+    const current = selectById(id)
     if (!current) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
     const category = patch.category ?? current.category
-    const key = patch.key === undefined ? current.memory_key : validateText(patch.key, patch.value ?? current.value).key
-    const value = patch.value === undefined ? current.value : validateText(patch.key ?? current.memory_key, patch.value).value
-    const result = db.prepare(`
-      UPDATE working_memory_entries
-      SET category = ?, memory_key = ?, value = ?, enabled = ?, revision = revision + 1, updated_at = ?
-      WHERE id = ? AND revision = ?
-    `).run(category, key, value, patch.enabled === undefined ? current.enabled : patch.enabled ? 1 : 0, new Date().toISOString(), id, patch.expectedRevision)
-    if (result.changes !== 1) {
-      if (!db.prepare('SELECT 1 FROM working_memory_entries WHERE id = ?').get(id)) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
-      throw new MemoryError('REVISION_CONFLICT', 'working memory entry was changed by another request')
-    }
-    return toEntry(db.prepare('SELECT id, project_id, category, memory_key, value, enabled, source_session_id, source_message_id, revision, created_at, updated_at FROM working_memory_entries WHERE id = ?').get(id) as WorkingRow)
+    const key = patch.key === undefined ? current.memory_key : validateKey(patch.key)
+    const value = patch.value === undefined ? current.value : validateText(key, patch.value).value
+    const timestamp = new Date().toISOString()
+    return db.transaction(() => {
+      const result = db.prepare(`
+        UPDATE working_memory_entries
+        SET category = ?, memory_key = ?, value = ?, enabled = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ?
+      `).run(category, key, value, patch.enabled === undefined ? current.enabled : patch.enabled ? 1 : 0, timestamp, id, patch.expectedRevision)
+      if (result.changes !== 1) {
+        if (!selectById(id)) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
+        throw new MemoryError('REVISION_CONFLICT', 'working memory entry was changed by another request')
+      }
+      if (current.value !== value) {
+        recordMemoryChange(db, {
+          id: randomUUID(),
+          layer: 'working',
+          entryId: id,
+          projectId: current.project_id,
+          category,
+          memoryKey: key,
+          action: 'replace',
+          oldValue: current.value,
+          newValue: value,
+          ...(current.source_session_id === null ? {} : { sourceSessionId: current.source_session_id }),
+          changedAt: timestamp,
+        })
+      }
+      return toEntry(selectById(id)!)
+    }).immediate()
   }
 
   function remove(id: string): void {
-    const result = db.prepare('DELETE FROM working_memory_entries WHERE id = ?').run(id)
-    if (result.changes === 0) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
+    db.transaction(() => {
+      const current = selectById(id)
+      if (!current) throw new MemoryError('NOT_FOUND', 'working memory entry was not found')
+      db.prepare('DELETE FROM working_memory_entries WHERE id = ?').run(id)
+      recordMemoryChange(db, {
+        id: randomUUID(),
+        layer: 'working',
+        entryId: id,
+        projectId: current.project_id,
+        category: current.category,
+        memoryKey: current.memory_key,
+        action: 'forget',
+        oldValue: current.value,
+        ...(current.source_session_id === null ? {} : { sourceSessionId: current.source_session_id }),
+        changedAt: new Date().toISOString(),
+      })
+    }).immediate()
+  }
+
+  function forgetByKey(projectId: string, key: string): string[] {
+    assertProject(projectId)
+    const normalized = normalizeKey(validateKey(key))
+    const rows = db.prepare(`
+      SELECT id, project_id, category, memory_key, value, enabled,
+             source_session_id, source_message_id, revision, created_at, updated_at
+      FROM working_memory_entries WHERE project_id = ?
+    `).all(projectId) as WorkingRow[]
+    const matches = rows.filter(row => normalizeKey(row.memory_key) === normalized)
+    for (const row of matches) remove(row.id)
+    return matches.map(row => row.value)
   }
 
   function clear(projectId: string): number {
@@ -185,5 +302,34 @@ export function createWorkingMemoryRepository(db: Database.Database) {
     return result.changes
   }
 
-  return { list, create, update, remove, clear }
+  function clearForFinishedTask(projectId: string, sessionId: string): number {
+    assertProject(projectId)
+    const clear = () => {
+      const rows = db.prepare(`
+        SELECT id, project_id, category, memory_key, value, enabled,
+               source_session_id, source_message_id, revision, created_at, updated_at
+        FROM working_memory_entries WHERE project_id = ?
+      `).all(projectId) as WorkingRow[]
+      const changedAt = new Date().toISOString()
+      for (const row of rows) {
+        recordMemoryChange(db, {
+          id: randomUUID(),
+          layer: 'working',
+          entryId: row.id,
+          projectId,
+          category: row.category,
+          memoryKey: row.memory_key,
+          action: 'task_cleanup',
+          oldValue: row.value,
+          sourceSessionId: sessionId,
+          changedAt,
+        })
+      }
+      db.prepare('DELETE FROM working_memory_entries WHERE project_id = ?').run(projectId)
+      return rows.length
+    }
+    return db.inTransaction ? clear() : db.transaction(clear).immediate()
+  }
+
+  return { list, create, update, remove, upsert, forgetByKey, clear, clearForFinishedTask }
 }

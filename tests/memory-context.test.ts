@@ -54,6 +54,8 @@ describe('memory context snapshots', () => {
     const after = createMemorySnapshot(db, session.id)
     expect(before.workingEntries[0]?.value).toBe('old')
     expect(after.workingEntries[0]?.value).toBe('new')
+    expect(JSON.stringify(after.transientMemory)).toContain('new')
+    expect(JSON.stringify(after.transientMemory)).not.toContain('old')
 
     const firstPreview = previewMemory(db, project.id)
     createMemorySettingsRepository(db).update({ workingTokens: 4_000, longTermTokens: 1_000, expectedRevision: 0 })

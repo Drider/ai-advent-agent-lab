@@ -13,6 +13,7 @@ import {
   type TaskTransitionOutcome,
 } from '../../shared/task'
 import { buildOnboardingPreview, completeOnboarding } from '../tasks/onboarding'
+import { createWorkingMemoryRepository } from '../memory/working-repository'
 
 const PENDING_TRANSITION_TTL_MS = 7 * 24 * 60 * 60 * 1_000
 
@@ -520,6 +521,10 @@ export function createTaskRepository(db: Database.Database) {
         pendingSummary: null,
         artifacts,
       })
+      if (terminal) {
+        const session = db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null }
+        if (session.project_id !== null) createWorkingMemoryRepository(db).clearForFinishedTask(session.project_id, sessionId)
+      }
       return getSnapshot(sessionId)!
     })
   }
@@ -609,7 +614,10 @@ export function createTaskRepository(db: Database.Database) {
           WHERE id = ? AND outcome IS NULL
         `).run(now(), (getRowForSession(sessionId)?.revision ?? 0) + 1, pending.id)
       }
-      return updateTask(task, { status: 'cancelled', pendingStage: null, pendingSummary: null })
+      const updated = updateTask(task, { status: 'cancelled', pendingStage: null, pendingSummary: null })
+      const session = db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null }
+      if (session.project_id !== null) createWorkingMemoryRepository(db).clearForFinishedTask(session.project_id, sessionId)
+      return updated
     })
   }
 
