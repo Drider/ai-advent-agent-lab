@@ -13,10 +13,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "^2.0.104",
     "@ai-sdk/openai": "4.0.108",
     "@ai-sdk/vue": "4.0.162",
     "@comark/nuxt": "0.8.1",
     "@iconify-json/lucide": "1.2.151",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@nuxt/ui": "4.12.0",
     "ai": "7.0.162",
     "better-sqlite3": "^13.0.3",

@@ -23,6 +23,7 @@ import { estimateInputTokens } from '../context-compaction/estimate'
 import { createMemoryUsageRepository } from '../memory/usage-repository'
 import { ContextLimitError } from '../context-compaction/step-guard'
 import { createInvariantRepository } from '../persistence/invariant-repository'
+import { parseMcpServers } from '../mcp/client'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -30,6 +31,7 @@ function getSafeRequestError(error: unknown): string {
 
 export default defineEventHandler(async (event) => {
   const rawBody = await readRawBody(event, 'utf8')
+  const runtimeConfig = useRuntimeConfig(event) as ChatRuntimeConfig & { mcpServers?: string }
 
   let request
   try {
@@ -46,11 +48,21 @@ export default defineEventHandler(async (event) => {
 
   let chatConfig: ReturnType<typeof resolveChatConfig>
   try {
-    chatConfig = resolveChatConfig(useRuntimeConfig(event) as ChatRuntimeConfig, request.model)
+    chatConfig = resolveChatConfig(runtimeConfig, request.model)
   } catch {
     throw createError({
       statusCode: 500,
       statusMessage: 'LLM server configuration is incomplete.',
+    })
+  }
+
+  let mcpServers
+  try {
+    mcpServers = parseMcpServers(runtimeConfig.mcpServers)
+  } catch {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'MCP server configuration is invalid.',
     })
   }
 
@@ -191,6 +203,7 @@ export default defineEventHandler(async (event) => {
       task: taskSnapshot,
       taskTools: createTaskTools({ db, sessionId: request.sessionId, turnId }),
       invariants,
+      mcpServers,
     },
     createDiceTool(randomInt, { repository: diceRepository }),
     createListSavedRollsTool({ repository: diceRepository }),

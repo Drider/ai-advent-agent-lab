@@ -18,6 +18,7 @@ LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_API_KEY=...
 LLM_MODEL_DEFAULT=deepseek/deepseek-v4.1-flash
 LLM_LOG_LEVEL=basic
+MCP_SERVERS_JSON=[]
 ```
 
 Замените пример адреса, ключа и при необходимости ID модели значениями своего провайдера. `LLM_BASE_URL` и `LLM_API_KEY` обязательны; `LLM_MODEL_DEFAULT` и `LLM_LOG_LEVEL` необязательны. ID модели можно изменить в левой панели чата для следующего запроса. Выбранная модель сохраняется отдельно для каждого диалога и восстанавливается после перезапуска. Ключ читается только сервером и не попадает в браузер.
@@ -27,6 +28,26 @@ LLM_LOG_LEVEL=basic
 ```bash
 npm run dev
 ```
+
+## MCP и Git-сервер
+
+Приложение может запускать локальные MCP-серверы как дочерние процессы через stdio. Для Git в `.env` укажите абсолютные пути к серверу и репозиторию:
+
+```dotenv
+MCP_SERVERS_JSON='[{"id":"git","command":"node","args":["/absolute/path/scripts/git-mcp-server.mjs","/absolute/path/repository"]}]'
+```
+
+Локальный сервер доступен в [`scripts/git-mcp-server.mjs`](scripts/git-mcp-server.mjs). Он предоставляет только инструменты чтения: `git_status`, `git_log` и `git_diff`. В агенте они получают имена `mcp_git__git_status`, `mcp_git__git_log` и `mcp_git__git_diff`. Сервер фиксирует репозиторий при запуске и не выполняет `add`, `commit`, `reset`, `checkout` или `push`.
+
+Проверить сервер отдельно можно так:
+
+```bash
+node scripts/git-mcp-server.mjs /absolute/path/repository
+```
+
+В этом режиме процесс ожидает MCP-запросы в stdin; для обычной работы его запускает приложение.
+
+Подробная схема регистрации Git-тулов на MCP-сервере, их namespace-имён, подключения к агенту и полного пути вызова описана в [документации по Git MCP](docs/mcp-git-tools.md).
 
 Для резервной копии работающей базы используйте live-backup API SQLite:
 

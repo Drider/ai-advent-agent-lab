@@ -11,6 +11,7 @@ import type {
 import {
   simulateReadableStream,
   tool,
+  type ToolSet,
   type UIMessage,
 } from 'ai'
 import { MockLanguageModelV3 } from 'ai/test'
@@ -1365,5 +1366,174 @@ describe('chat agent', () => {
       abortSignal: controller.signal,
     })).rejects.toThrow()
     expect(calls).toBe(1)
+  })
+
+  it('passes MCP tool schemas to the model and returns the MCP result to the next step', async () => {
+    const execute = vi.fn(async ({ query }: { query: string }) => ({
+      content: [{ type: 'text' as const, text: `MCP:${query}` }],
+    }))
+    const mcpTools: ToolSet = {
+      mcp_demo__lookup: tool({
+        description: 'Look up a value through MCP',
+        inputSchema: z.object({ query: z.string() }),
+        execute,
+      }),
+    }
+    const model = new MockLanguageModelV3({
+      doGenerate: [
+        fileToolCallResult('mcp-call', 'mcp_demo__lookup', { query: 'hello' }),
+        textResult('Получено MCP: hello.'),
+      ],
+    })
+
+    const result = await createChatAgent(model, createTestDiceTool(fixedDraw(1)), { mcpTools }).generate({
+      prompt: 'Проверь hello через MCP',
+    })
+
+    expect(result.text).toBe('Получено MCP: hello.')
+    expect(execute).toHaveBeenCalledWith({ query: 'hello' }, expect.anything())
+    expect(model.doGenerateCalls[0]?.tools?.map(candidate => candidate.name)).toContain('mcp_demo__lookup')
+    expect(JSON.stringify(model.doGenerateCalls[1]?.prompt)).toContain('MCP:hello')
+  })
+
+  it('keeps MCP connected through the stream and closes it after the response ends', async () => {
+    const execute = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'status: clean' }] }))
+    const close = vi.fn(async () => {})
+    const connect = vi.fn(async () => ({
+      tools: {
+        mcp_demo__status: tool({
+          description: 'Read git status through MCP',
+          inputSchema: z.object({}),
+          execute,
+        }),
+      },
+      names: ['mcp_demo__status'],
+      close,
+    }))
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamFileToolCallResult('mcp-status', 'mcp_demo__status', {}),
+        streamTextResult('Репозиторий чист.'),
+      ],
+    })
+
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [userMessage('Покажи статус Git')],
+      runId: '2026-11-23T12:00:00.000Z',
+      logLevel: 'off',
+      mcpServers: [{ id: 'demo', command: 'node', args: [] }],
+      mcpConnector: connect,
+    })
+    expect(close).not.toHaveBeenCalled()
+    await response.text()
+
+    expect(connect).toHaveBeenCalledOnce()
+    expect(execute).toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it('records MCP tool input and result for a persisted turn', async () => {
+    const db = openChatDatabase(join(fileDirectory, 'mcp-chat.sqlite'))
+    const sessions = createSessionRepository(db)
+    const turns = createTurnRepository(db)
+    const session = sessions.createSession()
+    const message = userMessage('Проверь статус через MCP') as ChatUIMessage
+    const turn = turns.beginUserTurn({
+      sessionId: session.id,
+      requestId: randomUUID(),
+      modelId: 'mock-model',
+      message,
+      agentConfig: {},
+    })
+    const model = new MockLanguageModelV3({
+      doStream: [
+        streamFileToolCallResult('mcp-persisted', 'mcp_demo__status', {}),
+        streamTextResult('Статус получен.'),
+      ],
+    })
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [message],
+      runId: session.runLogId,
+      logLevel: 'off',
+      sessionId: session.id,
+      turnId: turn.turnId,
+      turnRepository: turns,
+      mcpServers: [{ id: 'demo', command: 'node', args: [] }],
+      mcpConnector: async () => ({
+        tools: {
+          mcp_demo__status: tool({
+            description: 'Read status through MCP',
+            inputSchema: z.object({}),
+            execute: async () => ({ content: [{ type: 'text' as const, text: 'clean' }] }),
+          }),
+        },
+        names: ['mcp_demo__status'],
+        close: async () => {},
+      }),
+    })
+    await response.text()
+
+    expect(db.prepare('SELECT tool_name, status, input_json, output_json FROM tool_executions WHERE turn_id = ?').get(turn.turnId)).toMatchObject({
+      tool_name: 'mcp_demo__status',
+      status: 'completed',
+      input_json: '{}',
+      output_json: expect.stringContaining('clean'),
+    })
+    db.close()
+  })
+
+  it('closes MCP after the response consumer cancels the stream', async () => {
+    const close = vi.fn(async () => {})
+    const model = new MockLanguageModelV3({ doStream: {
+      stream: new ReadableStream({ start(controller) {
+        controller.enqueue({ type: 'stream-start', warnings: [] })
+        controller.enqueue({ type: 'text-start', id: 'mcp-cancel-text' })
+        controller.enqueue({ type: 'text-delta', id: 'mcp-cancel-text', delta: 'Частично' })
+      } }),
+    } })
+    const response = await streamChatAgent({
+      model,
+      modelId: 'mock-model',
+      messages: [userMessage('Отмени ответ')],
+      runId: '2026-11-23T12:01:00.000Z',
+      logLevel: 'off',
+      mcpServers: [{ id: 'demo', command: 'node', args: [] }],
+      mcpConnector: async () => ({ tools: {}, names: [], close }),
+    })
+    const reader = response.body!.getReader()
+    await reader.read()
+    await reader.cancel()
+
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
+  })
+
+  it('does not expose MCP tools while continuing a turn or working inside an open task', async () => {
+    const mcpTools: ToolSet = {
+      mcp_demo__status: tool({
+        description: 'Read status through MCP',
+        inputSchema: z.object({}),
+        execute: async () => ({ ok: true }),
+      }),
+    }
+    const continuationModel = new MockLanguageModelV3({ doGenerate: textResult('Продолжаю.') })
+    await createChatAgent(continuationModel, createTestDiceTool(fixedDraw(1)), {
+      disableMutatingTools: true,
+      mcpTools,
+    }).generate({ prompt: 'Продолжи' })
+    expect(continuationModel.doGenerateCalls[0]?.tools?.map(candidate => candidate.name)).not.toContain('mcp_demo__status')
+
+    const taskModel = new MockLanguageModelV3({ doGenerate: textResult('Работаю по задаче.') })
+    await createChatAgent(taskModel, createTestDiceTool(fixedDraw(1)), {
+      task: {
+        id: 'task-1', sessionId: 'session-1', templateId: 'dev', goal: 'Проверка', stage: 'planning',
+        step: '', status: 'active', artifacts: {}, answers: {}, createdAt: '', updatedAt: '',
+      },
+      mcpTools,
+    }).generate({ prompt: 'Составь план' })
+    expect(taskModel.doGenerateCalls[0]?.tools?.map(candidate => candidate.name)).not.toContain('mcp_demo__status')
   })
 })

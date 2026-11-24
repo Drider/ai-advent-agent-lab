@@ -19,6 +19,7 @@ export default defineNuxtConfig({
     llmApiKey: process.env.LLM_API_KEY ?? '',
     llmBaseUrl: process.env.LLM_BASE_URL ?? '',
     llmLogLevel: process.env.LLM_LOG_LEVEL ?? 'basic',
+    mcpServers: process.env.MCP_SERVERS_JSON ?? '[]',
     public: {
       chatDefaultModel: configuredDefaultModel
         ? validateModelId(configuredDefaultModel)

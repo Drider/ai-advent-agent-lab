@@ -8,6 +8,7 @@ import {
   type ModelMessage,
   type Tool,
   type TextStreamPart,
+  type ToolSet,
   type UIMessage,
 } from 'ai'
 import { calculateChatCost, DEFAULT_COMPACTION_SETTINGS, stopReasonMessage, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatMessageMetadata, type ChatPricing, type ChatUIMessage } from '../../shared/chat'
@@ -28,6 +29,7 @@ import type { UserProfileSnapshot } from '../../shared/user-profile'
 import { getExpectedAction, getTaskActiveTools, getTaskStage, getTaskTemplate, getTemplateQuestions, isTaskOpen, type TaskSnapshot, type TaskState } from '../../shared/task'
 import { checkInvariants, formatInvariantRefusal, type Invariant } from '../../shared/invariant'
 import { failure, type ToolResult } from '../tools/files/file-tool-contracts'
+import { connectMcpServers, type McpServerConfig } from '../mcp/client'
 
 export const MAX_AGENT_STEPS = 40
 export const AGENT_TIMEOUT_MS = 600_000
@@ -179,6 +181,7 @@ export function createChatAgent(
     profileSnapshot?: UserProfileSnapshot
     task?: TaskState
     invariants?: readonly Invariant[]
+    mcpTools?: ToolSet
     onError?: (event: { error: unknown }) => void
     onAbort?: (event: { reason?: unknown }) => void
   } = {},
@@ -190,8 +193,8 @@ export function createChatAgent(
   userProfileTools: UserProfileTools = createUserProfileTools(),
   taskTools: TaskTools = createTaskTools(),
   forgetMemoryTool: ForgetMemoryTool = createForgetMemoryTool(),
-): ToolLoopAgent<never, { rollDie: typeof diceTool; listSavedRolls: typeof savedRollsTool } & FileTools & SessionTools & { save_memory: SaveMemoryTool; forget_memory: ForgetMemoryTool } & ModelConfigurationTools & UserProfileTools & TaskTools> {
-  const tools = {
+): ToolLoopAgent<never, ToolSet> {
+  const localTools = {
     rollDie: diceTool,
     listSavedRolls: savedRollsTool,
     ...fileTools,
@@ -202,6 +205,13 @@ export function createChatAgent(
     ...sessionTools,
     ...taskTools,
   }
+  const includeMcpTools = !options.disableMutatingTools && !(options.task !== undefined && isTaskOpen(options.task))
+  const dynamicTools = includeMcpTools ? (options.mcpTools ?? {}) : {}
+  const mcpToolCollision = Object.keys(dynamicTools).find(name => name in localTools)
+  if (mcpToolCollision !== undefined) {
+    throw new Error(`MCP tool name collides with a local tool: ${mcpToolCollision}`)
+  }
+  const tools: ToolSet = { ...localTools, ...dynamicTools }
   return new ToolLoopAgent({
     model,
     instructions: buildAgentInstructions(options.profileSnapshot, options.disableMutatingTools, options.task, options.invariants),
@@ -332,6 +342,8 @@ export async function streamChatAgent(input: {
   userProfileTools?: UserProfileTools
   taskTools?: TaskTools
   invariants?: readonly Invariant[]
+  mcpServers?: McpServerConfig[]
+  mcpConnector?: typeof connectMcpServers
 }, diceTool = createDiceTool(), savedRollsTool = createListSavedRollsTool(), fileTools: FileTools = createFileTools(), sessionTools?: SessionTools): Promise<Response> {
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
@@ -410,6 +422,8 @@ export async function streamChatAgent(input: {
   })
   const persistedFileTools = recordTools(guardedFileTools as unknown as Record<string, Tool<unknown, unknown>>) as FileTools
   const persistedTaskTools = recordTools(taskTools as unknown as Record<string, Tool<unknown, unknown>>) as TaskTools
+  const shouldConnectMcp = !input.disableMutatingTools && !(input.task !== undefined && isTaskOpen(input.task))
+  let mcpConnection: Awaited<ReturnType<typeof connectMcpServers>> | undefined
 
   type ChatStreamPart = TextStreamPart<ReturnType<typeof createChatAgent>['tools']>
   const shouldGuardText = (input.invariants?.length ?? 0) > 0
@@ -575,6 +589,13 @@ export async function streamChatAgent(input: {
   }
 
   try {
+    if (shouldConnectMcp && (input.mcpServers?.length ?? 0) > 0) {
+      const connect = input.mcpConnector ?? connectMcpServers
+      mcpConnection = await connect(input.mcpServers!, { signal: input.abortSignal })
+    }
+    const persistedMcpTools = mcpConnection
+      ? recordTools(mcpConnection.tools as Record<string, Tool<unknown, unknown>>)
+      : undefined
     return await createAgentUIStreamResponse({
       agent: createChatAgent(
         input.model,
@@ -587,6 +608,7 @@ export async function streamChatAgent(input: {
           profileSnapshot: input.profileSnapshot,
           task: input.task,
           invariants: input.invariants,
+          mcpTools: persistedMcpTools,
           onError: ({ error }) => { streamFailure ??= error },
           onAbort: ({ reason }) => { abortReason = reason },
         },
@@ -641,6 +663,7 @@ export async function streamChatAgent(input: {
         }
       },
       onEnd: async (event) => {
+        await mcpConnection?.close()
         const finishReason = event.finishReason ?? steps.at(-1)?.finishReason
         const hasOutput = event.responseMessage.parts.some(part => part.type === 'text'
           ? part.text.trim().length > 0
@@ -707,6 +730,7 @@ export async function streamChatAgent(input: {
       },
     })
   } catch (error) {
+    await mcpConnection?.close()
     if (persisted && input.turnRepository && input.turnId) input.turnRepository.markFailed(input.turnId)
     await persistLog(undefined, 'failed', error, { outcome: 'failed', phase: 'setup', stepCount: steps.length })
     throw error
