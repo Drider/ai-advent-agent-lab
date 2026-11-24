@@ -49,6 +49,35 @@ node scripts/git-mcp-server.mjs /absolute/path/repository
 
 Подробная схема регистрации Git-тулов на MCP-сервере, их namespace-имён, подключения к агенту и полного пути вызова описана в [документации по Git MCP](docs/mcp-git-tools.md).
 
+### Time MCP Server
+
+Для демонстрации подключения опубликованного сервера времени добавьте в `.env`:
+
+```dotenv
+MCP_SERVERS_JSON='[{"id":"time","command":"uvx","args":["mcp-server-time"]}]'
+```
+
+Процесс Nuxt должен находить `uvx` в своём `PATH`. При первом запуске `uvx` скачивает `mcp-server-time` из PyPI, поэтому нужен доступ к сети и запуск может занять больше обычного. Чтобы прогреть пакет до старта приложения, выполните:
+
+```bash
+uvx mcp-server-time --help
+```
+
+Сервер публикует инструменты `get_current_time`, `convert_time` и `get_time_ago`; в чате они доступны как `mcp_time__get_current_time`, `mcp_time__convert_time` и `mcp_time__get_time_ago`. После запуска приложения можно проверить их вопросами:
+
+```text
+Сколько сейчас времени в Москве?
+Сколько будет в Москве, когда в Токио 18:00?
+```
+
+В истории хода раскройте вызов инструмента и убедитесь, что модель выбрала соответствующее namespace-имя и передала аргументы (например, `timezone: Europe/Moscow`). Следующий шаг модели должен содержать фактический результат MCP с датой и временем. Живой сценарий требует настроенных `LLM_BASE_URL` и `LLM_API_KEY`; ключ и личный `.env` не добавляйте в Git.
+
+Для проверки цепочки без ключа модели используйте opt-in интеграционный тест после прогрева `uvx`:
+
+```bash
+RUN_TIME_MCP_INTEGRATION=1 npx vitest run tests/time-mcp.integration.test.ts
+```
+
 Для резервной копии работающей базы используйте live-backup API SQLite:
 
 ```bash
