@@ -43,6 +43,44 @@ describe('parseMcpServers', () => {
 })
 
 describe('connectMcpServers', () => {
+  it('uses a 60-second default startup timeout for cold stdio servers', async () => {
+    let startupTimeoutMs: number | undefined
+    const createClient: McpClientFactory = vi.fn(async ({ timeoutMs }) => {
+      startupTimeoutMs = timeoutMs
+      return {
+        listTools: async () => ({ tools: [] }),
+        toolsFromDefinitions: () => ({}),
+        close: async () => {},
+      }
+    })
+
+    const connected = await connectMcpServers([
+      { id: 'time', command: 'uvx', args: ['mcp-server-time'] },
+    ], { createClient })
+
+    expect(startupTimeoutMs).toBe(60_000)
+    await connected.close()
+  })
+
+  it('lets stdio transports wait for modern protocol discovery', async () => {
+    let waitsForProtocolDiscovery: boolean | undefined
+    const createClient: McpClientFactory = vi.fn(async ({ transport }) => {
+      waitsForProtocolDiscovery = transport.waitsForProtocolVersionDiscovery
+      return {
+        listTools: async () => ({ tools: [] }),
+        toolsFromDefinitions: () => ({}),
+        close: async () => {},
+      }
+    })
+
+    const connected = await connectMcpServers([
+      { id: 'time', command: 'uvx', args: ['mcp-server-time'] },
+    ], { createClient })
+
+    expect(waitsForProtocolDiscovery).toBe(true)
+    await connected.close()
+  })
+
   it('discovers paginated tools, namespaces them, and closes every client', async () => {
     const clients: Array<{ closed: boolean }> = []
     const createClient: McpClientFactory = vi.fn(async ({ server }) => {

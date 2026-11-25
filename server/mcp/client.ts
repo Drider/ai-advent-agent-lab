@@ -2,6 +2,8 @@ import { createMCPClient, type ListToolsResult, type MCPTransport } from '@ai-sd
 import { StdioMCPTransport } from '@ai-sdk/mcp/mcp-stdio'
 import type { ToolSet } from 'ai'
 
+const DEFAULT_MCP_STARTUP_TIMEOUT_MS = 60_000
+
 export interface McpServerConfig {
   id: string
   command: string
@@ -32,10 +34,14 @@ export interface McpConnectionOptions {
 }
 
 function defaultCreateTransport(server: McpServerConfig): StdioMCPTransport {
-  return new StdioMCPTransport({
+  return Object.assign(new StdioMCPTransport({
     command: server.command,
     args: server.args,
     stderr: 'inherit',
+  }), {
+    // A cold uvx server can take longer than AI SDK's 1s discovery probe.
+    // Let the overall MCP initialization timeout control this stdio handshake.
+    waitsForProtocolVersionDiscovery: true,
   })
 }
 
@@ -123,7 +129,7 @@ export async function connectMcpServers(
   const tools: ToolSet = {}
   const names: string[] = []
   let closed = false
-  const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000)
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_MCP_STARTUP_TIMEOUT_MS)
   const startupController = new AbortController()
   const forwardAbort = () => startupController.abort(options.signal?.reason)
   if (options.signal?.aborted) forwardAbort()
