@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { DefaultChatTransport, isTextUIPart, isToolUIPart } from 'ai'
 import math, { Math as MathRenderer } from '@comark/nuxt/plugins/math'
-import { computed, onMounted, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 import { useChat } from '@ai-sdk/vue'
 import { buildChatCompactionSettings, dialogueCostTotals, latestContextUsage, parseContextLimit, type ChatCompactionSettings, type ChatContextStrategySettings, type ChatPricing, type ChatRequestBody, type ChatSessionStatus, type ChatUIMessage, type SessionDetail } from '~/shared/chat'
 import type { UserProfileSummary } from '~/shared/user-profile'
@@ -54,6 +54,10 @@ const continuationError = shallowRef<string | null>(null)
 const taskCommandError = shallowRef<string | null>(null)
 let pendingSend: { text: string; baselineIds: Set<string> } | null = null
 let chatMessages: { value: ChatUIMessage[] } | undefined
+let revisionPollTimer: ReturnType<typeof setInterval> | undefined
+let revisionPollPending = false
+let pendingSessionMessageSync = false
+let observedSessionRevision = props.session.revision
 
 const markdownComponents = { math: MathRenderer }
 const markdownPlugins = [math()]
@@ -229,9 +233,39 @@ const statusLabel = computed(() => {
 })
 
 watch(isBusy, busy => emit('busyChange', busy), { immediate: true })
+watch(isBusy, busy => {
+  if (busy || !pendingSessionMessageSync) return
+  pendingSessionMessageSync = false
+  messages.value = props.session.messages
+})
+watch(() => props.session.revision, revision => {
+  if (revision === observedSessionRevision) return
+  observedSessionRevision = revision
+  if (isBusy.value) {
+    pendingSessionMessageSync = true
+    return
+  }
+  messages.value = props.session.messages
+})
 watch(() => props.session.lastTurn, turn => {
   if (turn?.id === lastKnownTurnId.value) lastTurnStatus.value = turn.status
 })
+
+async function pollSessionRevision(): Promise<void> {
+  if (revisionPollPending || isBusy.value) return
+  const sessionId = props.session.id
+  revisionPollPending = true
+  try {
+    const latest = await $fetch<{ revision: number; status: string }>(`/api/sessions/${sessionId}/revision`)
+    if (props.session.id === sessionId && latest.status !== 'running' && latest.revision > props.session.revision) {
+      emit('updated')
+    }
+  } catch {
+    // Background polling is best-effort; normal chat actions still report errors.
+  } finally {
+    revisionPollPending = false
+  }
+}
 
 async function handleSubmit(event?: Event): Promise<void> {
   event?.preventDefault()
@@ -371,6 +405,11 @@ onMounted(() => {
   void $fetch(`/api/sessions/${props.session.id}/activate`, { method: 'POST' }).catch(() => {
     continuationError.value = 'Не удалось активировать диалог.'
   })
+  revisionPollTimer = setInterval(() => { void pollSessionRevision() }, 15_000)
+})
+
+onBeforeUnmount(() => {
+  if (revisionPollTimer) clearInterval(revisionPollTimer)
 })
 
 function dismissError(): void {

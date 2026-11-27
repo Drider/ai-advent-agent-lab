@@ -84,6 +84,7 @@ function openSettings(): void {
       <div class="chat-settings-summary__line"><span>Стоимость</span><strong>{{ costSettings.enabled ? 'включена' : 'выключена' }}</strong></div>
       <div class="chat-settings-summary__line"><span>Статистика</span><strong>{{ detailedStatistics ? 'подробная' : 'обычная' }}</strong></div>
       <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-settings-2" block @click="openSettings">Настройки</UButton>
+      <UButton to="/schedules" color="neutral" variant="outline" size="sm" icon="i-lucide-calendar-clock" block>Планировщик</UButton>
       <p v-if="props.modelSaveError" class="chat-settings-summary__error" role="alert">{{ props.modelSaveError }}</p>
     </section>
     <ChatSettingsModal

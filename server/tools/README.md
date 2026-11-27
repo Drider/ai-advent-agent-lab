@@ -21,6 +21,10 @@
 - [`tasks/`](./tasks/README.md) — состояние задачи, ответы анкеты, шаг и предложения переходов:
   `get_task_state`, `record_task_answer`, `amend_task_answer`, `update_task_step`,
   `request_task_transition`, `cancel_task_transition`.
+- [`scheduler/`](./scheduler/) — создание и управление фоновыми заданиями:
+  `list_scheduled_sources`, `create_scheduled_job`, `list_scheduled_jobs`,
+  `pause_scheduled_job`, `resume_scheduled_job`, `read_scheduled_reports`.
+  Готовые отчёты автоматически добавляются сообщением ассистента в чат создания задания.
 
 `server/agent/chat-agent.ts` подключает группы инструментов к `ToolLoopAgent`.
 Описание поведения для модели находится в определениях инструментов; файлы

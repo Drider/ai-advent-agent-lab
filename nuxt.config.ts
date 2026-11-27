@@ -20,6 +20,10 @@ export default defineNuxtConfig({
     llmBaseUrl: process.env.LLM_BASE_URL ?? '',
     llmLogLevel: process.env.LLM_LOG_LEVEL ?? 'basic',
     mcpServers: process.env.MCP_SERVERS_JSON ?? '[]',
+    schedulerSources: process.env.SCHEDULER_SOURCES_JSON ?? '[{"id":"clock","kind":"clock","allowedQueryKeys":[]}]',
+    schedulerMcpServer: process.env.SCHEDULER_MCP_SERVER_JSON ?? '',
+    schedulerEnabled: process.env.SCHEDULER_ENABLED !== 'false',
+    schedulerDefaultTimezone: process.env.SCHEDULER_DEFAULT_TIMEZONE ?? 'Europe/Moscow',
     public: {
       chatDefaultModel: configuredDefaultModel
         ? validateModelId(configuredDefaultModel)

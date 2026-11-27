@@ -24,6 +24,7 @@ import { createMemoryUsageRepository } from '../memory/usage-repository'
 import { ContextLimitError } from '../context-compaction/step-guard'
 import { createInvariantRepository } from '../persistence/invariant-repository'
 import { parseMcpServers } from '../mcp/client'
+import { createSchedulerTools } from '../tools/scheduler'
 
 function getSafeRequestError(error: unknown): string {
   return error instanceof Error ? error.message : 'Invalid chat request'
@@ -202,6 +203,7 @@ export default defineEventHandler(async (event) => {
       userProfileTools: createUserProfileTools({ db, sessionId: request.sessionId, turnId }),
       task: taskSnapshot,
       taskTools: createTaskTools({ db, sessionId: request.sessionId, turnId }),
+      schedulerTools: createSchedulerTools({ db, sessionId: request.sessionId }),
       invariants,
       mcpServers,
     },

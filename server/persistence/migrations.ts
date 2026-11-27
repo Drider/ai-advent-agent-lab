@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { modelConfigurationNameKey, validateModelConfiguration } from '../../shared/model-config'
 import { INITIAL_INVARIANTS } from '../../shared/invariant'
 
-export const CHAT_SCHEMA_VERSION = 19
+export const CHAT_SCHEMA_VERSION = 22
 
 export const INITIAL_USER_PROFILE_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -563,6 +563,143 @@ export function migrateChatDatabase(db: Database.Database): void {
         CREATE INDEX IF NOT EXISTS memory_changes_changed_at_idx
           ON memory_changes (changed_at DESC, id DESC);
       `)
+    }
+    if (currentVersion < 20) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+          source_id TEXT NOT NULL,
+          source_query_json TEXT NOT NULL CHECK (json_valid(source_query_json)),
+          collect_cron TEXT NOT NULL,
+          report_cron TEXT NOT NULL,
+          timezone TEXT NOT NULL,
+          summary_instruction TEXT NOT NULL,
+          model_id TEXT,
+          status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
+          next_collect_at TEXT NOT NULL,
+          next_report_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS scheduled_jobs_status_collect_idx
+          ON scheduled_jobs (status, next_collect_at);
+        CREATE TABLE IF NOT EXISTS scheduled_runs (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL REFERENCES scheduled_jobs(id) ON DELETE CASCADE,
+          scheduled_for TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'missed')),
+          observed_at TEXT,
+          error TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          UNIQUE (job_id, scheduled_for)
+        );
+        CREATE INDEX IF NOT EXISTS scheduled_runs_job_time_idx
+          ON scheduled_runs (job_id, scheduled_for DESC);
+        CREATE TABLE IF NOT EXISTS scheduled_results (
+          run_id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL REFERENCES scheduled_jobs(id) ON DELETE CASCADE,
+          scheduled_for TEXT NOT NULL,
+          observed_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (job_id, scheduled_for) REFERENCES scheduled_runs(job_id, scheduled_for)
+            ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS scheduled_results_job_time_idx
+          ON scheduled_results (job_id, scheduled_for, run_id);
+        CREATE TABLE IF NOT EXISTS scheduled_reports (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL REFERENCES scheduled_jobs(id) ON DELETE CASCADE,
+          scheduled_for TEXT NOT NULL,
+          period_from TEXT NOT NULL,
+          period_to TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+          run_count INTEGER NOT NULL DEFAULT 0 CHECK (run_count >= 0),
+          success_count INTEGER NOT NULL DEFAULT 0 CHECK (success_count >= 0),
+          failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+          missed_count INTEGER NOT NULL DEFAULT 0 CHECK (missed_count >= 0),
+          result_count INTEGER NOT NULL DEFAULT 0 CHECK (result_count >= 0),
+          text TEXT,
+          text_status TEXT NOT NULL CHECK (text_status IN ('pending', 'completed', 'failed')),
+          error TEXT,
+          created_at TEXT NOT NULL,
+          finished_at TEXT,
+          UNIQUE (job_id, scheduled_for)
+        );
+        CREATE INDEX IF NOT EXISTS scheduled_reports_job_time_idx
+          ON scheduled_reports (job_id, scheduled_for DESC);
+        CREATE TABLE IF NOT EXISTS scheduled_report_results (
+          report_id TEXT NOT NULL REFERENCES scheduled_reports(id) ON DELETE CASCADE,
+          run_id TEXT NOT NULL REFERENCES scheduled_results(run_id) ON DELETE CASCADE,
+          PRIMARY KEY (report_id, run_id)
+        );
+        CREATE TABLE IF NOT EXISTS scheduler_lease (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          owner_id TEXT NOT NULL,
+          acquired_at TEXT NOT NULL,
+          renewed_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+      `)
+    }
+    if (currentVersion < 21) {
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('scheduled_jobs') WHERE name = 'session_id'").get()) {
+        db.exec('ALTER TABLE scheduled_jobs ADD COLUMN session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL')
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS scheduled_jobs_session_idx
+          ON scheduled_jobs (session_id);
+        CREATE TABLE IF NOT EXISTS scheduled_report_deliveries (
+          report_id TEXT PRIMARY KEY REFERENCES scheduled_reports(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          message_id TEXT UNIQUE,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'delivered')),
+          created_at TEXT NOT NULL,
+          delivered_at TEXT
+        );
+      `)
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_executions'").get()) db.exec(`
+        UPDATE scheduled_jobs
+        SET session_id = (
+          SELECT turns.session_id
+          FROM tool_executions
+          JOIN turns ON turns.id = tool_executions.turn_id
+          WHERE tool_executions.tool_name = 'create_scheduled_job'
+            AND json_extract(CASE WHEN json_valid(tool_executions.output_json) THEN tool_executions.output_json ELSE '{}' END, '$.created') = 1
+            AND json_extract(CASE WHEN json_valid(tool_executions.output_json) THEN tool_executions.output_json ELSE '{}' END, '$.job.id') = scheduled_jobs.id
+          ORDER BY tool_executions.created_at DESC
+          LIMIT 1
+        )
+        WHERE session_id IS NULL;
+      `)
+    }
+    if (currentVersion < 22) {
+      const columns = db.pragma('table_info(scheduled_report_deliveries)') as Array<{ name: string; notnull: number }>
+      const names = new Set(columns.map(column => column.name))
+      if (!names.has('status') || !names.has('created_at') || columns.some(column => ['message_id', 'delivered_at'].includes(column.name) && column.notnull === 1)) {
+        db.exec(`
+          CREATE TABLE scheduled_report_deliveries_v22 (
+            report_id TEXT PRIMARY KEY REFERENCES scheduled_reports(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            message_id TEXT UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'delivered')),
+            created_at TEXT NOT NULL,
+            delivered_at TEXT
+          );
+        `)
+        const status = names.has('status') ? 'status' : "'delivered'"
+        const createdAt = names.has('created_at') ? 'created_at' : 'delivered_at'
+        db.exec(`
+          INSERT INTO scheduled_report_deliveries_v22
+            (report_id, session_id, message_id, status, created_at, delivered_at)
+          SELECT report_id, session_id, message_id, ${status}, ${createdAt}, delivered_at
+          FROM scheduled_report_deliveries;
+          DROP TABLE scheduled_report_deliveries;
+          ALTER TABLE scheduled_report_deliveries_v22 RENAME TO scheduled_report_deliveries;
+        `)
+      }
     }
     db.pragma(`user_version = ${CHAT_SCHEMA_VERSION}`)
     db.exec('COMMIT')
